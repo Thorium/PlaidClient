@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>netstandard2.0;net8.0;net10.0</TargetFrameworks>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
+    <PackageId>PlaidClient</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>Tuomas Hietanen</Authors>
+    <Description>Plaid open banking client: Link tokens, item linking, transactions sync and verified webhooks, with a replaceable storage layer.</Description>
+    <PackageTags>plaid;open-banking;transactions;fsharp</PackageTags>
+    <PackageProjectUrl>https://github.com/Thorium/PlaidClient</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Thorium/PlaidClient.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>v1.0.0:
+- ADDED: Link tokens (new item, update mode), public token exchange, accounts, transactions sync, refresh, item removal
+- ADDED: Sync.linkItemAsync / syncItemAsync / unlinkItemAsync / refreshItemInfoAsync over IPlaidStore
+- ADDED: webhook verification (Plaid-Verification ES256 JWT) and typed events, UK/EU and US/CA
+- ADDED: JsonFilePlaidStore and InMemoryPlaidStore for development, CSV export
+- ADDED: Api.postAsync / postRawAsync for any endpoint, Api.createLinkTokenForProductsAsync for any products</PackageReleaseNotes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="Types.fs" />
+    <Compile Include="Json.fs" />
+    <Compile Include="Parse.fs" />
+    <Compile Include="Api.fs" />
+    <Compile Include="Storage.fs" />
+    <Compile Include="Csv.fs" />
+    <Compile Include="Sync.fs" />
+    <Compile Include="Webhook.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" Version="8.0.403" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="System.Text.Json" Version="8.0.6" />
+  </ItemGroup>
+
+</Project>

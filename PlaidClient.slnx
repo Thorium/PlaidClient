@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/PlaidClient/PlaidClient.fsproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/PlaidClient.Tests/PlaidClient.Tests.fsproj" />
+  </Folder>
+</Solution>

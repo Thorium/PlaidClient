@@ -1,0 +1,196 @@
+namespace Plaid
+
+open System
+open System.Net.Http
+
+/// Plaid environment the client talks to.
+[<RequireQualifiedAccess>]
+type PlaidEnvironment =
+    | Sandbox
+    | Production
+
+    member this.BaseUrl =
+        match this with
+        | Sandbox -> "https://sandbox.plaid.com"
+        | Production -> "https://production.plaid.com"
+
+/// Credentials and Link settings. Printing it (ToString, %A) hides the secret.
+[<StructuredFormatDisplay("{Display}")>]
+type PlaidConfig =
+    { ClientId: string
+      Secret: string
+      Environment: PlaidEnvironment
+      /// Name shown to the end user in Link.
+      ClientName: string
+      /// ISO 3166-1 alpha-2 codes of the institutions Link offers, e.g. ["GB"].
+      CountryCodes: string list
+      Language: string
+      /// Registered OAuth redirect URI. UK banks connect through OAuth, so Link needs it there.
+      RedirectUri: string voption
+      /// Receives item and transactions webhooks.
+      WebhookUrl: string voption
+      /// History requested when an item is linked, 1..730 days.
+      TransactionsDaysRequested: int }
+
+    member this.Display =
+        $"PlaidConfig {{ ClientId = %s{this.ClientId}; Secret = ***; Environment = {this.Environment}; CountryCodes = %A{this.CountryCodes} }}"
+
+    override this.ToString() = this.Display
+
+module PlaidConfig =
+
+    /// English Link for the given countries, the maximum 730 days of history, no redirect URI or webhook.
+    let create clientId secret environment clientName (countryCodes: string list) =
+        { ClientId = clientId
+          Secret = secret
+          Environment = environment
+          ClientName = clientName
+          CountryCodes = countryCodes
+          Language = "en"
+          RedirectUri = ValueNone
+          WebhookUrl = ValueNone
+          TransactionsDaysRequested = 730 }
+
+    /// UK institutions. They connect through OAuth, so set RedirectUri as well.
+    let uk clientId secret environment clientName =
+        create clientId secret environment clientName [ "GB" ]
+
+    let us clientId secret environment clientName =
+        create clientId secret environment clientName [ "US" ]
+
+/// Configuration plus the HttpClient used for every call. The caller owns the HttpClient.
+type PlaidClient = { Config: PlaidConfig; Http: HttpClient }
+
+/// Error object Plaid returns with a non-success status.
+type PlaidApiError =
+    { HttpStatus: int
+      ErrorType: string
+      ErrorCode: string
+      ErrorMessage: string
+      /// Safe to show to the end user when present.
+      DisplayMessage: string voption
+      RequestId: string voption }
+
+type PlaidFailure =
+    | ApiError of PlaidApiError
+    | TransportError of exn
+    | InvalidResponse of message: string
+    | UnknownItem of itemId: string
+    | WebhookRejected of reason: string
+
+type LinkToken =
+    { LinkToken: string
+      Expiration: DateTimeOffset
+      RequestId: string }
+
+/// Result of exchanging a Link public token. The access token is a long-lived secret; printing hides it.
+[<StructuredFormatDisplay("{Display}")>]
+type ItemAccess =
+    { ItemId: string
+      AccessToken: string }
+
+    member this.Display = $"ItemAccess {{ ItemId = {this.ItemId}; AccessToken = *** }}"
+    override this.ToString() = this.Display
+
+type Balances =
+    { Available: decimal voption
+      Current: decimal voption
+      Limit: decimal voption
+      IsoCurrencyCode: string voption
+      UnofficialCurrencyCode: string voption }
+
+type Account =
+    { AccountId: string
+      Name: string
+      OfficialName: string voption
+      Mask: string voption
+      Type: string
+      Subtype: string voption
+      Balances: Balances }
+
+type ItemInfo =
+    { ItemId: string
+      InstitutionId: string voption
+      /// When the end user's consent ends; UK/EU items must be renewed through update mode before it.
+      ConsentExpirationTime: DateTimeOffset voption
+      Error: PlaidApiError voption }
+
+type AccountsResult = { Item: ItemInfo; Accounts: Account list }
+
+type PersonalFinanceCategory =
+    { Primary: string
+      Detailed: string
+      ConfidenceLevel: string voption }
+
+type Transaction =
+    { TransactionId: string
+      AccountId: string
+      /// Positive when money leaves the account, negative when it arrives.
+      Amount: decimal
+      IsoCurrencyCode: string voption
+      UnofficialCurrencyCode: string voption
+      /// Posting date, or the transaction date while pending.
+      Date: DateTime
+      AuthorizedDate: DateTime voption
+      Name: string
+      MerchantName: string voption
+      Pending: bool
+      PendingTransactionId: string voption
+      PaymentChannel: string
+      Category: PersonalFinanceCategory voption
+      /// The transaction object exactly as Plaid sent it, including fields not modelled here.
+      Raw: string }
+
+type RemovedTransaction =
+    { TransactionId: string
+      AccountId: string voption }
+
+[<RequireQualifiedAccess>]
+type TransactionsUpdateStatus =
+    | Unknown
+    | NotReady
+    | InitialUpdateComplete
+    | HistoricalUpdateComplete
+
+/// One /transactions/sync page.
+type SyncPage =
+    { Added: Transaction list
+      Modified: Transaction list
+      Removed: RemovedTransaction list
+      NextCursor: string
+      HasMore: bool
+      UpdateStatus: TransactionsUpdateStatus
+      Accounts: Account list }
+
+/// Changes of one complete sync, in the order Plaid sent them.
+type TransactionChanges =
+    { Added: Transaction list
+      Modified: Transaction list
+      Removed: RemovedTransaction list }
+
+module TransactionChanges =
+
+    let empty: TransactionChanges = { Added = []; Modified = []; Removed = [] }
+
+    let ofPages (pages: SyncPage list) : TransactionChanges =
+        { Added = pages |> List.collect _.Added
+          Modified = pages |> List.collect _.Modified
+          Removed = pages |> List.collect _.Removed }
+
+    /// Upserts added and modified transactions, then drops removed ones.
+    let apply (changes: TransactionChanges) (existing: Map<string, Transaction>) =
+        let upserted =
+            changes.Added @ changes.Modified
+            |> List.fold (fun acc (t: Transaction) -> acc |> Map.add t.TransactionId t) existing
+
+        changes.Removed
+        |> List.fold (fun acc (r: RemovedTransaction) -> acc |> Map.remove r.TransactionId) upserted
+
+type WebhookVerificationKey =
+    { KeyId: string
+      Algorithm: string
+      Curve: string
+      /// Base64url EC public key coordinates.
+      X: string
+      Y: string
+      ExpiredAt: DateTimeOffset voption }
