@@ -105,9 +105,20 @@ let createLinkTokenAsync (client: PlaidClient) (clientUserId: string) ct =
         [ "transactions", box {| days_requested = client.Config.TransactionsDaysRequested |} ]
         ct
 
+/// Link token for update mode with extra /link/token/create fields, e.g. "android_package_name" for an
+/// Android app. fields override the config's when they repeat one.
+let createUpdateLinkTokenWithFieldsAsync
+    (client: PlaidClient)
+    (clientUserId: string)
+    (accessToken: string)
+    (fields: (string * obj) list)
+    ct
+    =
+    createLinkToken client (linkFields client.Config clientUserId @ ("access_token", box accessToken) :: fields) ct
+
 /// Link token for update mode: renews consent (PENDING_EXPIRATION) or repairs a broken login (ITEM_LOGIN_REQUIRED).
 let createUpdateLinkTokenAsync (client: PlaidClient) (clientUserId: string) (accessToken: string) ct =
-    createLinkToken client (linkFields client.Config clientUserId @ [ "access_token", box accessToken ]) ct
+    createUpdateLinkTokenWithFieldsAsync client clientUserId accessToken [] ct
 
 /// Exchanges the public token Link hands the browser for a permanent access token.
 let exchangePublicTokenAsync (client: PlaidClient) (publicToken: string) ct =
@@ -121,13 +132,26 @@ let getAccountsAsync (client: PlaidClient) (accessToken: string) ct =
 [<Literal>]
 let MaxSyncPageSize = 500
 
+/// The /transactions/sync options object for the config's SyncSettings; null when nothing differs from Plaid's defaults.
+let private syncOptions (settings: SyncSettings) : obj =
+    let fields: (string * obj) list =
+        [ if settings.IncludeOriginalDescription then
+              "include_original_description", box true
+          match settings.PersonalFinanceCategoryVersion with
+          | ValueSome version -> "personal_finance_category_version", box version
+          | ValueNone -> () ]
+
+    if fields.IsEmpty then null else box (Map.ofList fields)
+
 /// One /transactions/sync page after cursor; ValueNone or "" starts from the beginning of the item's history.
 /// Until the first data arrives Plaid answers NOT_READY with no transactions and an empty next_cursor.
+/// The options come from client.Config.Sync.
 let syncTransactionsPageAsync (client: PlaidClient) (accessToken: string) (cursor: string voption) (count: int) ct =
     let body =
         {| access_token = accessToken
            cursor = cursor |> ValueOption.filter (String.IsNullOrEmpty >> not) |> ValueOption.toObj
-           count = count |}
+           count = count
+           options = syncOptions client.Config.Sync |}
 
     postAsync client "/transactions/sync" body Parse.syncPage ct
 

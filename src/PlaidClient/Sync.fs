@@ -17,25 +17,29 @@ type LinkedItem =
       InitialSync: SyncSummary }
 
 /// Every page after cursor. When Plaid reports TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION the
-/// pages fetched so far are discarded and paging restarts from cursor; the token bounds the retries.
+/// pages fetched so far are discarded and paging restarts from cursor, at most
+/// client.Config.Sync.MaxRestarts times; after that the error is returned.
 let fetchChangesAsync
     (client: PlaidClient)
     (accessToken: string)
     (cursor: string voption)
     (ct: CancellationToken)
     : Task<Result<TransactionChanges * SyncPage, PlaidFailure>> =
-    let rec loop pageCursor (pages: SyncPage list) =
+    let rec loop restarts pageCursor (pages: SyncPage list) =
         task {
             match! Api.syncTransactionsPageAsync client accessToken pageCursor Api.MaxSyncPageSize ct with
-            | Ok page when page.HasMore -> return! loop (ValueSome page.NextCursor) (page :: pages)
+            | Ok page when page.HasMore -> return! loop restarts (ValueSome page.NextCursor) (page :: pages)
             | Ok page -> return Ok(TransactionChanges.ofPages (List.rev (page :: pages)), page)
-            | Error(ApiError e) when e.ErrorCode = "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION" ->
+            | Error(ApiError e) when
+                e.ErrorCode = "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION"
+                && restarts < client.Config.Sync.MaxRestarts
+                ->
                 ct.ThrowIfCancellationRequested()
-                return! loop cursor []
+                return! loop (restarts + 1) cursor []
             | Error e -> return Error e
         }
 
-    loop cursor []
+    loop 0 cursor []
 
 /// Pulls everything since the item's stored cursor and applies it to the store.
 let syncItemAsync (client: PlaidClient) (store: IPlaidStore) (itemId: string) ct =

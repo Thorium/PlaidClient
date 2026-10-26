@@ -102,6 +102,49 @@ let ``mutation during pagination restarts from the original cursor and drops the
     }
 
 [<Fact>]
+let ``repeated mutation during pagination stops after MaxRestarts and returns the error`` () : Task =
+    task {
+        use handler =
+            new FakePlaidHandler(fun _ body ->
+                match cursorOf body with
+                | ValueNone -> ok (syncPageJson [ transactionJson "tx-1" 10m ] [] [] "c1" true)
+                | ValueSome _ -> plaidError 400 "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION")
+
+        let client =
+            { clientWith handler with
+                Config = { config with Sync = { SyncSettings.defaults with MaxRestarts = 2 } } }
+
+        let! store = storeWith [ item ]
+        let! result = Sync.syncItemAsync client store "item-1" ct
+
+        match result with
+        | Error(ApiError e) -> Assert.Equal("TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION", e.ErrorCode)
+        | other -> failwith $"%A{other}"
+
+        // The first attempt plus two restarts, two pages each.
+        Assert.Equal(6, handler.Calls.Length)
+        let! stored = store.TryGetItemAsync("item-1", ct)
+        Assert.Equal(ValueNone, stored |> ValueOption.bind _.Cursor)
+        let! transactions = store.GetTransactionsAsync("item-1", ct)
+        Assert.Empty transactions
+    }
+
+[<Fact>]
+let ``MaxRestarts zero returns the first mutation error`` () : Task =
+    task {
+        use handler =
+            new FakePlaidHandler(fun _ _ -> plaidError 400 "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION")
+
+        let client =
+            { clientWith handler with
+                Config = { config with Sync = { SyncSettings.defaults with MaxRestarts = 0 } } }
+
+        let! result = Sync.fetchChangesAsync client "access-1" ValueNone ct
+        Assert.True(Result.isError result)
+        Assert.Single handler.Calls |> ignore
+    }
+
+[<Fact>]
 let ``a failed sync leaves the cursor and transactions untouched`` () : Task =
     task {
         use handler =

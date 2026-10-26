@@ -14,6 +14,24 @@ type PlaidEnvironment =
         | Sandbox -> "https://sandbox.plaid.com"
         | Production -> "https://production.plaid.com"
 
+/// How /transactions/sync is called.
+type SyncSettings =
+    { /// Asks for original_description, the bank's raw text for each transaction.
+      IncludeOriginalDescription: bool
+      /// Category taxonomy, e.g. "v2". ValueNone leaves Plaid's default for the account.
+      PersonalFinanceCategoryVersion: string voption
+      /// Restarts after TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION before the sync returns that error.
+      /// A failed sync leaves the stored cursor as it was, so the next sync starts over safely.
+      MaxRestarts: int }
+
+module SyncSettings =
+
+    /// Plaid's defaults: no original description, the account's default taxonomy, three restarts.
+    let defaults =
+        { IncludeOriginalDescription = false
+          PersonalFinanceCategoryVersion = ValueNone
+          MaxRestarts = 3 }
+
 /// Credentials and Link settings. Printing it (ToString, %A) hides the secret.
 [<StructuredFormatDisplay("{Display}")>]
 type PlaidConfig =
@@ -30,7 +48,8 @@ type PlaidConfig =
       /// Receives item and transactions webhooks.
       WebhookUrl: string voption
       /// History requested when an item is linked, 1..730 days.
-      TransactionsDaysRequested: int }
+      TransactionsDaysRequested: int
+      Sync: SyncSettings }
 
     member this.Display =
         $"PlaidConfig {{ ClientId = %s{this.ClientId}; Secret = ***; Environment = {this.Environment}; CountryCodes = %A{this.CountryCodes} }}"
@@ -39,7 +58,8 @@ type PlaidConfig =
 
 module PlaidConfig =
 
-    /// English Link for the given countries, the maximum 730 days of history, no redirect URI or webhook.
+    /// English Link for the given countries, the maximum 730 days of history, no redirect URI or webhook,
+    /// SyncSettings.defaults.
     let create clientId secret environment clientName (countryCodes: string list) =
         { ClientId = clientId
           Secret = secret
@@ -49,7 +69,8 @@ module PlaidConfig =
           Language = "en"
           RedirectUri = ValueNone
           WebhookUrl = ValueNone
-          TransactionsDaysRequested = 730 }
+          TransactionsDaysRequested = 730
+          Sync = SyncSettings.defaults }
 
     /// UK institutions. They connect through OAuth, so set RedirectUri as well.
     let uk clientId secret environment clientName =
@@ -133,6 +154,8 @@ type Transaction =
       Date: DateTime
       AuthorizedDate: DateTime voption
       Name: string
+      /// The bank's raw description; present when SyncSettings.IncludeOriginalDescription is set.
+      OriginalDescription: string voption
       MerchantName: string voption
       Pending: bool
       PendingTransactionId: string voption

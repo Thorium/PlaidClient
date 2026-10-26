@@ -120,6 +120,85 @@ let ``receive fetches the key by kid, verifies and parses`` () : Task =
         Assert.Equal(Ok(Webhook.SyncUpdatesAvailable("item-1", true, false)), result)
     }
 
+let private keyReply (kid: string) =
+    $"""{{"key":{{"alg":"ES256","created_at":1560466150,"crv":"P-256","expired_at":null,"kid":"{kid}","kty":"EC","use":"sig","x":"{key.X}","y":"{key.Y}"}},"request_id":"r"}}"""
+
+let private keyHandler () =
+    new FakePlaidHandler(fun _ request -> ok (keyReply (request.GetProperty("key_id").GetString())))
+
+[<Fact>]
+let ``cached receive fetches the key once for repeated webhooks`` () : Task =
+    task {
+        use handler = keyHandler ()
+        let client = clientWith handler
+        let cache = Webhook.KeyCache(TimeSpan.FromHours 1.0)
+
+        for minute in 0.0 .. 2.0 do
+            let at = now.AddMinutes minute
+            let! result = Webhook.receiveCachedAsync cache client body (jwtFor "kid-1" at body) at CancellationToken.None
+            Assert.Equal(Ok(Webhook.SyncUpdatesAvailable("item-1", true, false)), result)
+
+        Assert.Single handler.Calls |> ignore
+    }
+
+[<Fact>]
+let ``cached key is fetched again once older than refreshAfter, and per kid`` () : Task =
+    task {
+        use handler = keyHandler ()
+        let client = clientWith handler
+        let cache = Webhook.KeyCache(TimeSpan.FromMinutes 10.0)
+        let fetch kid (at: DateTimeOffset) = cache.GetAsync(client, kid, at, CancellationToken.None)
+
+        let! _ = fetch "kid-1" now
+        let! _ = fetch "kid-1" (now.AddMinutes 9.0)
+        Assert.Equal(1, handler.Calls.Length)
+        let! _ = fetch "kid-1" (now.AddMinutes 10.0)
+        Assert.Equal(2, handler.Calls.Length)
+        let! _ = fetch "kid-2" (now.AddMinutes 10.0)
+
+        Assert.Equal<string list>(
+            [ "kid-1"; "kid-1"; "kid-2" ],
+            handler.Calls |> List.map (fun c -> c.Body.GetProperty("key_id").GetString())
+        )
+    }
+
+[<Fact>]
+let ``a failed key fetch is not cached`` () : Task =
+    task {
+        let failFirst = ref true
+
+        use handler =
+            new FakePlaidHandler(fun _ _ ->
+                if failFirst.Value then
+                    failFirst.Value <- false
+                    plaidError 500 "INTERNAL_SERVER_ERROR"
+                else
+                    ok (keyReply "kid-1"))
+
+        let client = clientWith handler
+        let cache = Webhook.KeyCache(TimeSpan.FromHours 1.0)
+        let! first = Webhook.verifyCachedAsync cache client body (jwtFor "kid-1" now body) now CancellationToken.None
+        Assert.True(Result.isError first)
+        let! second = Webhook.verifyCachedAsync cache client body (jwtFor "kid-1" now body) now CancellationToken.None
+        Assert.Equal(Ok(), second)
+        Assert.Equal(2, handler.Calls.Length)
+    }
+
+[<Fact>]
+let ``cached verify still rejects a tampered body`` () : Task =
+    task {
+        use handler = keyHandler ()
+        let cache = Webhook.KeyCache(TimeSpan.FromHours 1.0)
+        let jwt = jwtFor "kid-1" now body
+
+        let! result =
+            Webhook.verifyCachedAsync cache (clientWith handler) (body.Replace("item-1", "item-2")) jwt now CancellationToken.None
+
+        match result with
+        | Error(WebhookRejected reason) -> Assert.Contains("request_body_sha256", reason)
+        | other -> failwith $"%A{other}"
+    }
+
 [<Fact>]
 let ``item webhooks parse to their cases`` () =
     let parse (json: string) = Webhook.parse json

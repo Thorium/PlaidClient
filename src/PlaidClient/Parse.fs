@@ -68,6 +68,7 @@ let transaction (e: JsonElement) : Transaction =
       Date = required "date" tryDate e
       AuthorizedDate = tryDate "authorized_date" e
       Name = tryString "name" e |> ValueOption.defaultValue ""
+      OriginalDescription = tryString "original_description" e
       MerchantName = tryString "merchant_name" e
       Pending = tryBool "pending" e |> ValueOption.defaultValue false
       PendingTransactionId = tryString "pending_transaction_id" e

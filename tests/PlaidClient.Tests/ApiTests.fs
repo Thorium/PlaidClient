@@ -121,6 +121,70 @@ let ``update mode link token sends the access token and no products`` () : Task 
     }
 
 [<Fact>]
+let ``update mode link token with fields adds them, e.g. android_package_name`` () : Task =
+    task {
+        use handler =
+            new FakePlaidHandler(fun _ _ ->
+                ok """{"link_token":"link-sandbox-4","expiration":"2026-10-26T12:00:00Z","request_id":"r1"}""")
+
+        let fields: (string * obj) list = [ "android_package_name", box "com.example.app" ]
+
+        let! result = Api.createUpdateLinkTokenWithFieldsAsync (clientWith handler) "user-42" "access-1" fields ct
+        Assert.True(Result.isOk result)
+        let body = (Assert.Single handler.Calls).Body
+        Assert.Equal("com.example.app", body.GetProperty("android_package_name").GetString())
+        Assert.Equal("access-1", body.GetProperty("access_token").GetString())
+        Assert.Equal("user-42", body.GetProperty("user").GetProperty("client_user_id").GetString())
+        Assert.False(body.TryGetProperty "products" |> fst)
+    }
+
+[<Fact>]
+let ``sync sends no options by default`` () : Task =
+    task {
+        use handler = new FakePlaidHandler(fun _ _ -> ok (syncPageJson [] [] [] "c" false))
+        let! _ = Api.syncTransactionsPageAsync (clientWith handler) "access-1" ValueNone 10 ct
+        Assert.False((Assert.Single handler.Calls).Body.TryGetProperty "options" |> fst)
+    }
+
+[<Fact>]
+let ``sync settings become options and original_description is parsed`` () : Task =
+    task {
+        let withDescription =
+            (transactionJson "tx-1" 10m).Replace("\"name\":", "\"original_description\":\"BET365 LTD GIBRALTAR\",\"name\":")
+
+        use handler = new FakePlaidHandler(fun _ _ -> ok (syncPageJson [ withDescription ] [] [] "c" false))
+
+        let client =
+            { clientWith handler with
+                Config =
+                    { config with
+                        Sync =
+                            { SyncSettings.defaults with
+                                IncludeOriginalDescription = true
+                                PersonalFinanceCategoryVersion = ValueSome "v2" } } }
+
+        match! Api.syncTransactionsPageAsync client "access-1" ValueNone 10 ct with
+        | Ok page ->
+            let t = Assert.Single page.Added
+            Assert.Equal(ValueSome "BET365 LTD GIBRALTAR", t.OriginalDescription)
+        | Error e -> failwith $"%A{e}"
+
+        let options = (Assert.Single handler.Calls).Body.GetProperty "options"
+        Assert.True(options.GetProperty("include_original_description").GetBoolean())
+        Assert.Equal("v2", options.GetProperty("personal_finance_category_version").GetString())
+    }
+
+[<Fact>]
+let ``original_description is absent unless Plaid sends it`` () : Task =
+    task {
+        use handler = new FakePlaidHandler(fun _ _ -> ok (syncPageJson [ transactionJson "tx-1" 10m ] [] [] "c" false))
+
+        match! Api.syncTransactionsPageAsync (clientWith handler) "access-1" ValueNone 10 ct with
+        | Ok page -> Assert.Equal(ValueNone, (Assert.Single page.Added).OriginalDescription)
+        | Error e -> failwith $"%A{e}"
+    }
+
+[<Fact>]
 let ``Plaid error body becomes ApiError`` () : Task =
     task {
         use handler = new FakePlaidHandler(fun _ _ -> plaidError 400 "ITEM_LOGIN_REQUIRED")

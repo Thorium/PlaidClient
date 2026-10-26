@@ -38,8 +38,8 @@ let! token = Api.createLinkTokenAsync client userId ct
 //    On Error after the exchange the item is already stored; retry with Sync.syncItemAsync.
 let! linked = Sync.linkItemAsync client store userId publicToken ct
 
-// 3. Webhook endpoint: verify, parse, react.
-match! Webhook.receiveAsync client rawBody request.Headers[Webhook.VerificationHeader] DateTimeOffset.UtcNow ct with
+// 3. Webhook endpoint: verify, parse, react. One KeyCache per process (a static in a Lambda).
+match! Webhook.receiveCachedAsync keyCache client rawBody request.Headers[Webhook.VerificationHeader] DateTimeOffset.UtcNow ct with
 | Ok(Webhook.SyncUpdatesAvailable(itemId, _, _)) ->
     let! _ = Sync.syncItemAsync client store itemId ct
     ()
@@ -50,11 +50,46 @@ match! Webhook.receiveAsync client rawBody request.Headers[Webhook.VerificationH
 | Error _ -> (* reply 400 and ignore *) ()
 ```
 
-Pass the webhook body to `receiveAsync` exactly as received, before any JSON round trip: the signature covers its
-SHA-256. `receiveAsync` fetches the signing key on every call. A busy endpoint can cache keys by `Webhook.keyIdOf`
-and call `Webhook.verifyWithKey` instead.
+Pass the webhook body exactly as received, before any JSON round trip: the signature covers its SHA-256.
+
+`Webhook.KeyCache(refreshAfter)` keeps Plaid's signing keys by key id, so repeated webhooks cost no extra Plaid
+call. A cached key is fetched again once it is older than `refreshAfter`. That is also how long a key Plaid has
+rotated out keeps verifying new webhooks, because only a fresh fetch shows its `expired_at`. Failed fetches are not
+cached. `receiveAsync` / `verifyAsync` fetch the key on every call instead.
 
 `Transaction.Amount` uses Plaid's sign convention: positive means money left the account.
+
+## Sync settings
+
+`PlaidConfig.Sync` controls `/transactions/sync`:
+
+| Field | Default | Effect |
+| --- | --- | --- |
+| `IncludeOriginalDescription` | `false` | Asks for the bank's raw description, read as `Transaction.OriginalDescription` |
+| `PersonalFinanceCategoryVersion` | `ValueNone` | Category taxonomy, e.g. `ValueSome "v2"`; none means the account's default |
+| `MaxRestarts` | `3` | Restarts after `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION` before the sync returns that error |
+
+```fsharp
+let config =
+    { PlaidConfig.uk clientId secret PlaidEnvironment.Production "Your Company" with
+        Sync = { SyncSettings.defaults with IncludeOriginalDescription = true; PersonalFinanceCategoryVersion = ValueSome "v2" } }
+```
+
+A sync that gives up leaves the stored cursor and transactions as they were, so the next webhook or retry starts
+over from the same point.
+
+## Mobile apps
+
+Plaid's React Native and Android SDKs need `android_package_name` on the Link token for Android. Pass it as an
+extra field, in update mode too:
+
+```fsharp
+let android: (string * obj) list = [ "android_package_name", box "com.example.app" ]
+let! token = Api.createLinkTokenForProductsAsync client userId [ "transactions" ] android ct
+let! renew = Api.createUpdateLinkTokenWithFieldsAsync client userId accessToken android ct
+```
+
+Use a config with `RedirectUri = ValueNone` for those calls if your Plaid setup wants no redirect URI on Android.
 
 ## Other Plaid products
 
@@ -115,7 +150,7 @@ The API calls, sync and webhook verification are the same in every region. What 
 | Config | `PlaidConfig.uk`, or `PlaidConfig.create ... ["IE"; "FR"; ...]` (set `Language` for non-English Link) | `PlaidConfig.us`, or `create ... ["US"; "CA"]` |
 | OAuth redirect | Needed for practically every bank: register it in the dashboard and set `RedirectUri` | Needed for some large banks (OAuth institutions); set it if you offer them |
 | Losing access | Consent expires: `PENDING_EXPIRATION` webhook, date in `ConsentExpiration` | `PENDING_DISCONNECT` webhook with reason and `disconnect_time`; `ConsentExpiration` usually empty |
-| Recovery | Link in update mode (`Api.createUpdateLinkTokenAsync`), then `Sync.refreshItemInfoAsync` for the new expiry | Same |
+| Recovery | Link in update mode (`Api.createUpdateLinkTokenAsync`, or `createUpdateLinkTokenWithFieldsAsync` for extra fields), then `Sync.refreshItemInfoAsync` for the new expiry | Same |
 
 Some fields exist only in some regions (for example `transaction_type` and counterparty details for European
 banks). The typed `Transaction` keeps the common fields; everything else is in `Transaction.Raw`.
@@ -134,6 +169,12 @@ dotnet test
 
 The tests run against a fake Plaid HTTP handler. Webhook tests sign JWTs with a P-256 key generated during the test,
 so no Plaid credentials are needed.
+
+## Licence
+
+[The Unlicense](LICENSE): public domain.
+
+## Examples
 
 `examples/sandbox.fsx` runs the full flow against the Plaid sandbox. It needs `PLAID_CLIENT_ID` and `PLAID_SECRET`,
 and writes the store and a CSV under `examples/data/`.
