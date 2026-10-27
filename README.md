@@ -302,3 +302,9 @@ so no Plaid credentials are needed.
 
 `examples/sandbox.fsx` runs the full flow against the Plaid sandbox. It needs `PLAID_CLIENT_ID` and `PLAID_SECRET`,
 and writes the store and a CSV under `examples/data/`.
+
+`examples/webhook-check.fsx` checks webhook verification against real Plaid webhooks. It links a sandbox item
+whose webhook URL is a new [webhook.site](https://webhook.site) address, and makes Plaid send
+`SYNC_UPDATES_AVAILABLE`, `WEBHOOK_UPDATE_ACKNOWLEDGED` and an `ITEM_LOGIN_REQUIRED` error. It then reads each
+webhook back and runs it through `Webhook.receiveCachedAsync`, and exits 0 when all of them verify. It needs the
+same sandbox keys. Anyone with the webhook.site address can read what it received, so use sandbox keys only.
