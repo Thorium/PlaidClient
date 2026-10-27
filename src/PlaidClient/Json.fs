@@ -34,6 +34,8 @@ let tryDecimal name e = tryNumber (fun v -> v.TryGetDecimal()) name e
 
 let tryInt64 name e = tryNumber (fun v -> v.TryGetInt64()) name e
 
+let tryInt name e = tryNumber (fun v -> v.TryGetInt32()) name e
+
 let tryBool name e =
     tryProp name e
     |> ValueOption.bind (fun v ->
@@ -64,7 +66,23 @@ let array name e =
     | ValueSome v -> v.EnumerateArray() |> List.ofSeq
     | ValueNone -> []
 
+/// voption to option, for List.choose.
+let toOption =
+    function
+    | ValueSome v -> Some v
+    | ValueNone -> None
+
+/// The string elements of an array property; empty when the property is missing or null.
+let strings name e =
+    array name e
+    |> List.choose (fun v -> if v.ValueKind = JsonValueKind.String then Some(v.GetString()) else None)
+
 let required name (reader: string -> JsonElement -> 'T voption) e =
     match reader name e with
     | ValueSome v -> v
     | ValueNone -> raise (InvalidJson $"Missing or invalid field '{name}'")
+
+let requiredString name e = required name tryString e
+
+/// A string field holding one of a closed set of codes, read with ofCode.
+let requiredCode name (ofCode: string -> 'T) e = requiredString name e |> ofCode

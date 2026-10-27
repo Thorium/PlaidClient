@@ -3,6 +3,7 @@ module WebhookTests
 open System
 open System.Security.Cryptography
 open System.Text
+open System.Text.Json
 open System.Threading
 open System.Threading.Tasks
 open Xunit
@@ -200,6 +201,46 @@ let ``cached verify still rejects a tampered body`` () : Task =
     }
 
 [<Fact>]
+let ``a payment webhook body with Plaid's two-space indentation verifies and parses`` () : Task =
+    task {
+        // Plaid signs the body exactly as sent, indentation included.
+        let paymentBody =
+            "{\n  \"webhook_type\": \"PAYMENT_INITIATION\",\n  \"webhook_code\": \"PAYMENT_STATUS_UPDATE\",\n  \"payment_id\": \"payment-id-sandbox-1\",\n  \"new_payment_status\": \"PAYMENT_STATUS_EXECUTED\",\n  \"old_payment_status\": \"PAYMENT_STATUS_INITIATED\",\n  \"timestamp\": \"2026-10-26T11:59:00Z\",\n  \"error\": null,\n  \"environment\": \"sandbox\"\n}"
+
+        use handler = keyHandler ()
+        let cache = Webhook.KeyCache(TimeSpan.FromHours 1.0)
+        let jwt = jwtFor "kid-1" now paymentBody
+
+        let! result = Webhook.receiveCachedAsync cache (clientWith handler) paymentBody jwt now CancellationToken.None
+
+        match result with
+        | Ok(Webhook.PaymentStatusUpdate("payment-id-sandbox-1", Payments.PaymentStatus.Executed, _, ValueSome _, ValueNone)) -> ()
+        | other -> failwith $"%A{other}"
+
+        Assert.Equal(200, Webhook.statusCodeFor result)
+
+        // The same JSON re-serialized without the indentation is a different body: rejected.
+        let compact = JsonDocument.Parse(paymentBody).RootElement.GetRawText().Replace("\n", "").Replace("  ", "")
+        let! rejected = Webhook.receiveCachedAsync cache (clientWith handler) compact jwt now CancellationToken.None
+        Assert.Equal(400, Webhook.statusCodeFor rejected)
+    }
+
+[<Fact>]
+let ``status code tells Plaid to retry only when the key could not be fetched`` () : Task =
+    task {
+        use failing = new FakePlaidHandler(fun _ _ -> plaidError 500 "INTERNAL_SERVER_ERROR")
+        let! keyFetchFailed = Webhook.receiveAsync (clientWith failing) body (jwtFor "kid-1" now body) now CancellationToken.None
+        Assert.Equal(503, Webhook.statusCodeFor keyFetchFailed)
+
+        use working = keyHandler ()
+        let! forged = Webhook.receiveAsync (clientWith working) body "not-a-jwt" now CancellationToken.None
+        Assert.Equal(400, Webhook.statusCodeFor forged)
+
+        let! stale = Webhook.receiveAsync (clientWith working) body (jwtFor "kid-1" (now.AddMinutes -6.0) body) now CancellationToken.None
+        Assert.Equal(400, Webhook.statusCodeFor stale)
+    }
+
+[<Fact>]
 let ``item webhooks parse to their cases`` () =
     let parse (json: string) = Webhook.parse json
 
@@ -229,3 +270,9 @@ let ``item webhooks parse to their cases`` () =
     )
 
     Assert.True(Result.isError (parse "{}"))
+
+[<Fact>]
+let ``an item webhook without item_id is an invalid response, not an empty item id`` () =
+    match Webhook.parse """{"webhook_type":"TRANSACTIONS","webhook_code":"SYNC_UPDATES_AVAILABLE"}""" with
+    | Error(InvalidResponse message) -> Assert.Contains("item_id", message)
+    | other -> failwith $"%A{other}"

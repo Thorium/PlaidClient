@@ -22,6 +22,31 @@ type WebhookEvent =
     | UserAccountRevoked of itemId: string * accountId: string voption
     | LoginRepaired of itemId: string
     | NewAccountsAvailable of itemId: string
+    /// Sent to the new URL after Api.updateItemWebhookAsync.
+    | WebhookUpdateAcknowledged of itemId: string * newWebhookUrl: string voption
+    /// The asset report is ready: Assets.getReportAsync. reportType is "FULL" or "FAST".
+    | AssetReportReady of assetReportId: string * reportType: string voption * userId: string voption
+    | AssetReportFailed of assetReportId: string * error: PlaidApiError voption
+    /// Payroll or document income finished processing: Income.getPayrollIncomeAsync. status is e.g.
+    /// "VERIFICATION_STATUS_PROCESSING_COMPLETE" or "VERIFICATION_STATUS_PROCESSING_FAILED".
+    | IncomeVerification of itemId: string voption * userId: string voption * status: string voption
+    /// An Identity Verification changed: read it with Identity.getVerificationAsync, the webhook itself
+    /// carries no status.
+    | IdentityVerificationUpdated of verificationId: string * change: Identity.VerificationChange
+    /// Not sent for InputNeeded or Authorising. Webhooks can arrive out of order: compare timestamp with
+    /// the last one applied, or read the payment with Payments.getPaymentAsync.
+    | PaymentStatusUpdate of
+        paymentId: string *
+        newStatus: Payments.PaymentStatus *
+        oldStatus: Payments.PaymentStatus voption *
+        timestamp: DateTimeOffset voption *
+        error: PlaidApiError voption
+    | ConsentStatusUpdate of
+        consentId: string *
+        newStatus: Payments.ConsentStatus *
+        oldStatus: Payments.ConsentStatus voption *
+        timestamp: DateTimeOffset voption *
+        error: PlaidApiError voption
     | Other of webhookType: string * webhookCode: string * itemId: string voption
 
 /// Plaid signs each webhook for five minutes.
@@ -163,21 +188,15 @@ let parse (body: string) : Result<WebhookEvent, PlaidFailure> =
     try
         use doc = JsonDocument.Parse body
         let e = doc.RootElement
-        let itemId = Json.tryString "item_id" e
-        let item () = itemId |> ValueOption.defaultValue ""
+        // ITEM and TRANSACTIONS webhooks always name their item.
+        let item () = Json.requiredString "item_id" e
         let flag name = Json.tryBool name e |> ValueOption.defaultValue false
 
         let event =
-            match Json.required "webhook_type" Json.tryString e, Json.required "webhook_code" Json.tryString e with
+            match Json.requiredString "webhook_type" e, Json.requiredString "webhook_code" e with
             | "TRANSACTIONS", "SYNC_UPDATES_AVAILABLE" ->
                 SyncUpdatesAvailable(item (), flag "initial_update_complete", flag "historical_update_complete")
-            | "ITEM", "ERROR" ->
-                let error =
-                    Json.tryObject "error" e
-                    |> ValueOption.filter (fun err -> (Json.tryString "error_code" err).IsSome)
-                    |> ValueOption.map (Parse.apiError 0)
-
-                ItemError(item (), error)
+            | "ITEM", "ERROR" -> ItemError(item (), Parse.embeddedError "error" e)
             | "ITEM", "PENDING_EXPIRATION" -> PendingExpiration(item (), Json.tryTimestamp "consent_expiration_time" e)
             | "ITEM", "PENDING_DISCONNECT" ->
                 PendingDisconnect(item (), Json.tryString "reason" e, Json.tryTimestamp "disconnect_time" e)
@@ -185,7 +204,51 @@ let parse (body: string) : Result<WebhookEvent, PlaidFailure> =
             | "ITEM", "USER_ACCOUNT_REVOKED" -> UserAccountRevoked(item (), Json.tryString "account_id" e)
             | "ITEM", "LOGIN_REPAIRED" -> LoginRepaired(item ())
             | "ITEM", "NEW_ACCOUNTS_AVAILABLE" -> NewAccountsAvailable(item ())
-            | webhookType, webhookCode -> Other(webhookType, webhookCode, itemId)
+            | "ITEM", "WEBHOOK_UPDATE_ACKNOWLEDGED" ->
+                WebhookUpdateAcknowledged(item (), Json.tryString "new_webhook_url" e)
+            | "ASSETS", "PRODUCT_READY" ->
+                AssetReportReady(
+                    Json.requiredString "asset_report_id" e,
+                    Json.tryString "report_type" e,
+                    Json.tryString "user_id" e
+                )
+            | "ASSETS", "ERROR" ->
+                AssetReportFailed(Json.requiredString "asset_report_id" e, Parse.embeddedError "error" e)
+            | "INCOME", ("USER_INCOME_VERIFICATION" | "INCOME_VERIFICATION") ->
+                IncomeVerification(
+                    Json.tryString "item_id" e,
+                    Json.tryString "user_id" e,
+                    Json.tryString "verification_status" e
+                )
+            | "IDENTITY_VERIFICATION", code ->
+                let change =
+                    match code with
+                    | "STATUS_UPDATED" -> Identity.VerificationChange.StatusUpdated
+                    | "STEP_UPDATED" -> Identity.VerificationChange.StepUpdated
+                    | "RETRIED" -> Identity.VerificationChange.Retried
+                    | other -> Identity.VerificationChange.Other other
+
+                IdentityVerificationUpdated(Json.requiredString "identity_verification_id" e, change)
+            | "PAYMENT_INITIATION", "PAYMENT_STATUS_UPDATE" ->
+                let status name =
+                    Json.tryString name e |> ValueOption.map Payments.PaymentStatus.ofString
+
+                PaymentStatusUpdate(
+                    Json.requiredString "payment_id" e,
+                    Json.requiredString "new_payment_status" e |> Payments.PaymentStatus.ofString,
+                    status "old_payment_status",
+                    Json.tryTimestamp "timestamp" e,
+                    Parse.embeddedError "error" e
+                )
+            | "PAYMENT_INITIATION", "CONSENT_STATUS_UPDATE" ->
+                ConsentStatusUpdate(
+                    Json.requiredString "consent_id" e,
+                    Json.requiredString "new_status" e |> Payments.ConsentStatus.ofString,
+                    Json.tryString "old_status" e |> ValueOption.map Payments.ConsentStatus.ofString,
+                    Json.tryTimestamp "timestamp" e,
+                    Parse.embeddedError "error" e
+                )
+            | webhookType, webhookCode -> Other(webhookType, webhookCode, Json.tryString "item_id" e)
 
         Ok event
     with
@@ -207,3 +270,12 @@ let receiveCachedAsync (cache: KeyCache) (client: PlaidClient) (body: string) (j
         | Error e -> return Error e
         | Ok() -> return parse body
     }
+
+/// The HTTP status to answer Plaid with. Plaid retries 5xx for up to 24 hours but treats most 4xx as final:
+/// 400 for a webhook that failed verification or could not be read, 503 when the signing key could not be
+/// fetched (Plaid or the network failed), so a genuine webhook is delivered again.
+let statusCodeFor (result: Result<'T, PlaidFailure>) =
+    match result with
+    | Ok _ -> 200
+    | Error(WebhookRejected _ | InvalidResponse _ | InvalidArgument _) -> 400
+    | Error(ApiError _ | TransportError _ | HttpError _ | UnknownItem _) -> 503

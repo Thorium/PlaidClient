@@ -12,6 +12,9 @@
     <Compile Include="SyncTests.fs" />
     <Compile Include="StorageTests.fs" />
     <Compile Include="WebhookTests.fs" />
+    <Compile Include="ItemAndInstitutionTests.fs" />
+    <Compile Include="UsProductsTests.fs" />
+    <Compile Include="PaymentsIdentityTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

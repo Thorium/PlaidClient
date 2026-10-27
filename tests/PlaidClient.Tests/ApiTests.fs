@@ -197,11 +197,15 @@ let ``Plaid error body becomes ApiError`` () : Task =
     }
 
 [<Fact>]
-let ``non-JSON failure becomes InvalidResponse`` () : Task =
+let ``non-JSON failure becomes HttpError with its status`` () : Task =
     task {
         use handler = new FakePlaidHandler(fun _ _ -> 502, "<html>bad gateway</html>")
+
         match! Api.removeItemAsync (clientWith handler) "access-1" ct with
-        | Error(InvalidResponse message) -> Assert.Contains("502", message)
+        | Error(HttpError(status, body) as failure) ->
+            Assert.Equal(502, status)
+            Assert.Contains("bad gateway", body)
+            Assert.Equal(FailureAction.RetryLater, PlaidFailure.action failure)
         | other -> failwith $"%A{other}"
     }
 

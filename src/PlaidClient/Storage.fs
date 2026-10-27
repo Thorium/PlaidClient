@@ -51,32 +51,33 @@ module Transaction =
 
 module internal StoreJson =
 
-    let private toObj = ValueOption.toObj
-
     let toVOption =
         function
         | Some x -> ValueSome x
         | None -> ValueNone
+
+    let private indented =
+        JsonSerializerOptions(Request.serializerOptions, WriteIndented = true)
 
     let writeItems (items: StoredItem seq) =
         let dto (i: StoredItem) =
             {| item_id = i.ItemId
                user_id = i.UserId
                access_token = i.AccessToken
-               cursor = toObj i.Cursor
-               institution_id = toObj i.InstitutionId
-               consent_expiration = i.ConsentExpiration |> ValueOption.map _.ToString("o") |> toObj |}
+               cursor = i.Cursor
+               institution_id = i.InstitutionId
+               consent_expiration = i.ConsentExpiration |> ValueOption.map _.ToString("o") |}
 
-        JsonSerializer.Serialize(items |> Seq.map dto |> Array.ofSeq, JsonSerializerOptions(WriteIndented = true))
+        JsonSerializer.Serialize(items |> Seq.map dto |> List.ofSeq, indented)
 
     let readItems (text: string) =
         use doc = JsonDocument.Parse text
 
         doc.RootElement.EnumerateArray()
         |> Seq.map (fun e ->
-            { ItemId = Json.required "item_id" Json.tryString e
-              UserId = Json.required "user_id" Json.tryString e
-              AccessToken = Json.required "access_token" Json.tryString e
+            { ItemId = Json.requiredString "item_id" e
+              UserId = Json.requiredString "user_id" e
+              AccessToken = Json.requiredString "access_token" e
               Cursor = Json.tryString "cursor" e
               InstitutionId = Json.tryString "institution_id" e
               ConsentExpiration = Json.tryTimestamp "consent_expiration" e })
