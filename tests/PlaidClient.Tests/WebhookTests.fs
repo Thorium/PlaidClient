@@ -180,9 +180,80 @@ let ``a failed key fetch is not cached`` () : Task =
         let cache = Webhook.KeyCache(TimeSpan.FromHours 1.0)
         let! first = Webhook.verifyCachedAsync cache client body (jwtFor "kid-1" now body) now CancellationToken.None
         Assert.True(Result.isError first)
-        let! second = Webhook.verifyCachedAsync cache client body (jwtFor "kid-1" now body) now CancellationToken.None
+        let later = now.AddSeconds 1.0
+        let! second = Webhook.verifyCachedAsync cache client body (jwtFor "kid-1" later body) later CancellationToken.None
         Assert.Equal(Ok(), second)
         Assert.Equal(2, handler.Calls.Length)
+    }
+
+[<Fact>]
+let ``key ids the cache never held go to Plaid at most once per unknownKeyInterval`` () : Task =
+    task {
+        use handler = keyHandler ()
+        let client = clientWith handler
+        let cache = Webhook.KeyCache(TimeSpan.FromHours 1.0)
+        let fetch kid (at: DateTimeOffset) = cache.GetAsync(client, kid, at, CancellationToken.None)
+
+        let! first = fetch "kid-1" now
+        Assert.True(Result.isOk first)
+        let! limited = fetch "made-up" (now.AddMilliseconds 999.0)
+        Assert.Equal(Error(KeyFetchLimited "made-up"), limited)
+        Assert.Equal(503, Webhook.statusCodeFor limited)
+        Assert.Equal(FailureAction.RetryLater, PlaidFailure.action (KeyFetchLimited "made-up"))
+        // A held key id needs no slot
+        let! held = fetch "kid-1" (now.AddMilliseconds 999.0)
+        Assert.True(Result.isOk held)
+        Assert.Equal(1, handler.Calls.Length)
+        let! next = fetch "made-up" (now.AddSeconds 1.0)
+        Assert.True(Result.isOk next)
+        Assert.Equal(2, handler.Calls.Length)
+    }
+
+[<Fact>]
+let ``refreshing a held key id is not limited`` () : Task =
+    task {
+        use handler = keyHandler ()
+        let client = clientWith handler
+        let cache = Webhook.KeyCache(TimeSpan.FromMinutes 10.0, TimeSpan.FromHours 1.0)
+        let fetch kid (at: DateTimeOffset) = cache.GetAsync(client, kid, at, CancellationToken.None)
+
+        let! _ = fetch "kid-1" now
+        let! refreshed = fetch "kid-1" (now.AddMinutes 10.0)
+        let! unknown = fetch "kid-2" (now.AddMinutes 10.0)
+        Assert.True(Result.isOk refreshed)
+        Assert.Equal(Error(KeyFetchLimited "kid-2"), unknown)
+        Assert.Equal(2, handler.Calls.Length)
+    }
+
+/// Answers key requests only once released, counting them.
+type private GatedKeyHandler() =
+    inherit Net.Http.HttpMessageHandler()
+    let release = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+    let mutable calls = 0
+
+    member _.Calls = calls
+    member _.Release() = release.SetResult()
+
+    override _.SendAsync(_, _) =
+        Interlocked.Increment &calls |> ignore
+
+        task {
+            do! release.Task
+            return new Net.Http.HttpResponseMessage(Net.HttpStatusCode.OK, Content = new Net.Http.StringContent(keyReply "kid-1"))
+        }
+
+[<Fact>]
+let ``concurrent requests for one key id share a single fetch`` () : Task =
+    task {
+        use handler = new GatedKeyHandler()
+        let client = { Config = config; Http = new Net.Http.HttpClient(handler) }
+        let cache = Webhook.KeyCache(TimeSpan.FromHours 1.0)
+        let pending = [ for _ in 1..5 -> cache.GetAsync(client, "kid-1", now, CancellationToken.None) ]
+        Assert.All(pending, fun t -> Assert.False t.IsCompleted)
+        handler.Release()
+        let! results = Task.WhenAll pending
+        Assert.All(results, fun r -> Assert.True(Result.isOk r))
+        Assert.Equal(1, handler.Calls)
     }
 
 [<Fact>]

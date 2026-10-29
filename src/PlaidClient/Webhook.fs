@@ -3,6 +3,7 @@ module Plaid.Webhook
 
 open System
 open System.Collections.Concurrent
+open System.Collections.Generic
 open System.Security.Cryptography
 open System.Text
 open System.Text.Json
@@ -149,29 +150,70 @@ let verifyAsync (client: PlaidClient) (body: string) (jwt: string) (now: DateTim
             | Ok key -> return verifyWithKey key body jwt now |> Result.mapError WebhookRejected
     }
 
+/// The default KeyCache limit on fetches for key ids it has never held.
+let defaultUnknownKeyInterval = TimeSpan.FromSeconds 1.0
+
 /// Verification keys by key id: fetched from Plaid on a miss, and again once a cached copy is older than
 /// refreshAfter. refreshAfter bounds how long a key Plaid has since rotated out keeps verifying new
 /// webhooks, because the cached copy only learns its expired_at when fetched again. Failures are not
 /// cached. Safe to share between concurrent requests; keep one per process.
-type KeyCache(refreshAfter: TimeSpan) =
+///
+/// The key id comes from the unverified JWT, so a key id the cache has never held is fetched at most once
+/// per unknownKeyInterval; within it, another one is KeyFetchLimited (answer 503, and Plaid sends the webhook
+/// again). Without the limit every forged request would cost a Plaid call made with your credentials.
+/// Concurrent requests for the same key id share one fetch, which no single caller's token cancels.
+type KeyCache(refreshAfter: TimeSpan, unknownKeyInterval: TimeSpan) =
     let keys = ConcurrentDictionary<string, struct (WebhookVerificationKey * DateTimeOffset)>()
+    let fetches = ConcurrentDictionary<string, Lazy<Task<Result<WebhookVerificationKey, PlaidFailure>>>>()
+    let gate = obj ()
+    let mutable lastUnknownFetch = DateTimeOffset.MinValue
+
+    /// True, taking the slot, when no unknown key id was fetched within unknownKeyInterval before now.
+    let claimUnknownFetch (now: DateTimeOffset) =
+        lock gate (fun () ->
+            if now - lastUnknownFetch >= unknownKeyInterval then
+                lastUnknownFetch <- now
+                true
+            else
+                false)
+
+    let forget keyId fetch =
+        (fetches :> ICollection<KeyValuePair<_, _>>).Remove(KeyValuePair(keyId, fetch)) |> ignore
+
+    /// Keys fetched again after refreshAfter, and unknown key ids at most once per defaultUnknownKeyInterval.
+    new(refreshAfter) = KeyCache(refreshAfter, defaultUnknownKeyInterval)
 
     member _.RefreshAfter = refreshAfter
+    member _.UnknownKeyInterval = unknownKeyInterval
 
     /// The key for keyId: the cached copy while it is younger than RefreshAfter at now, otherwise Plaid's.
     member _.GetAsync
         (client: PlaidClient, keyId: string, now: DateTimeOffset, ct: CancellationToken)
         : Task<Result<WebhookVerificationKey, PlaidFailure>> =
-        task {
-            match keys.TryGetValue keyId with
-            | true, struct (key, fetchedAt) when now - fetchedAt < refreshAfter -> return Ok key
-            | _ ->
-                match! Api.getWebhookVerificationKeyAsync client keyId ct with
-                | Ok key ->
-                    keys[keyId] <- struct (key, now)
-                    return Ok key
-                | Error e -> return Error e
-        }
+        match keys.TryGetValue keyId with
+        | true, struct (key, fetchedAt) when now - fetchedAt < refreshAfter -> Task.FromResult(Ok key)
+        | held, _ ->
+            ct.ThrowIfCancellationRequested()
+            let mine = ref Unchecked.defaultof<Lazy<_>>
+
+            mine.Value <-
+                lazy
+                    if not held && not (claimUnknownFetch now) then
+                        forget keyId mine.Value
+                        Task.FromResult(Error(KeyFetchLimited keyId))
+                    else
+                        task {
+                            try
+                                match! Api.getWebhookVerificationKeyAsync client keyId CancellationToken.None with
+                                | Ok key ->
+                                    keys[keyId] <- struct (key, now)
+                                    return Ok key
+                                | Error e -> return Error e
+                            finally
+                                forget keyId mine.Value
+                        }
+
+            fetches.GetOrAdd(keyId, mine.Value).Value
 
 /// Same as verifyAsync, taking the key from cache.
 let verifyCachedAsync (cache: KeyCache) (client: PlaidClient) (body: string) (jwt: string) (now: DateTimeOffset) ct =
@@ -278,4 +320,4 @@ let statusCodeFor (result: Result<'T, PlaidFailure>) =
     match result with
     | Ok _ -> 200
     | Error(WebhookRejected _ | InvalidResponse _ | InvalidArgument _) -> 400
-    | Error(ApiError _ | TransportError _ | HttpError _ | UnknownItem _) -> 503
+    | Error(ApiError _ | TransportError _ | HttpError _ | UnknownItem _ | KeyFetchLimited _) -> 503

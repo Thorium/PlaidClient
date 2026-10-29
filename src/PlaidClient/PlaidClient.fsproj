@@ -6,7 +6,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
     <PackageId>PlaidClient</PackageId>
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
     <Authors>Tuomas Hietanen</Authors>
     <PackageLicenseExpression>Unlicense</PackageLicenseExpression>
     <Description>Plaid open banking client: transactions sync, UK/EU payments, identity checks (Identity Match, KYC), Auth, Assets and Income, with verified webhooks and a replaceable storage layer.</Description>
@@ -15,7 +15,12 @@
     <RepositoryUrl>https://github.com/Thorium/PlaidClient.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageReleaseNotes>v1.2.0:
+    <PackageReleaseNotes>v1.2.1:
+- CHANGED: Webhook.KeyCache fetches a key id it never held at most once per unknownKeyInterval (default 1 s); others get KeyFetchLimited
+- ADDED: KeyCache(refreshAfter, unknownKeyInterval); concurrent requests for one key id share a single fetch
+- ADDED: PlaidFailure.KeyFetchLimited (BREAKING for exhaustive matches): statusCodeFor 503, action RetryLater
+
+v1.2.0:
 - ADDED: Api.getBalancesAsync (real-time balance), getItemAsync (ItemDetails), updateItemWebhookAsync
 - ADDED: Api.getInstitutionAsync / searchInstitutionsAsync (name, logo, colour, OAuth)
 - ADDED: Api.sandboxFireWebhookAsync / sandboxResetLoginAsync

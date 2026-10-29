@@ -127,14 +127,21 @@ What Plaid expects of the endpoint:
   `Payments.getPaymentAsync`.
 - **The body must be byte-for-byte what Plaid sent:** the signature covers its SHA-256, and Plaid indents with two
   spaces. Read it as UTF-8 text before any JSON parsing.
-- **Optional hardening:** a webhook naming an unknown key id costs one `/webhook_verification_key/get` call, so a
-  flood of forged requests spends your Plaid rate limit. Rate-limit the endpoint, or allow only Plaid's published
-  sender IPs (52.21.26.131, 52.21.47.157, 52.41.247.19, 52.88.82.239, which Plaid says may change).
+- **Optional hardening:** allow only Plaid's published sender IPs (52.21.26.131, 52.21.47.157, 52.41.247.19,
+  52.88.82.239, which Plaid says may change).
 
 `Webhook.KeyCache(refreshAfter)` keeps Plaid's signing keys by key id, so repeated webhooks cost no extra Plaid
-call. A cached key is fetched again once it is older than `refreshAfter`. That is also how long a key Plaid has
-rotated out keeps verifying new webhooks, because only a fresh fetch shows its `expired_at`. Failed fetches are not
-cached. `receiveAsync` / `verifyAsync` fetch the key on every call instead.
+call.
+
+- **Refresh:** a cached key is fetched again once it is older than `refreshAfter`. That is also how long a key Plaid
+  has rotated out keeps verifying new webhooks, because only a fresh fetch shows its `expired_at`.
+- **Failures:** failed fetches are not cached.
+- **Unknown key ids:** the key id comes from the unverified JWT, so a key id the cache has never held goes to Plaid
+  at most once per `unknownKeyInterval` (default one second; `KeyCache(refreshAfter, unknownKeyInterval)` sets it).
+  Within it, another unknown key id is `KeyFetchLimited`: `statusCodeFor` answers 503, and Plaid sends the webhook
+  again. A forged request therefore cannot make your server call Plaid each time.
+- **Concurrency:** concurrent requests for the same key id share one fetch.
+- **Uncached calls:** `receiveAsync` / `verifyAsync` fetch the key on every call instead.
 
 `Transaction.Amount` uses Plaid's sign convention: positive means money left the account.
 

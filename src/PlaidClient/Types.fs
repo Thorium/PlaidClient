@@ -107,6 +107,8 @@ type PlaidFailure =
     | InvalidResponse of message: string
     | UnknownItem of itemId: string
     | WebhookRejected of reason: string
+    /// Webhook.KeyCache did not ask Plaid for this unknown key id: another one was fetched moments ago.
+    | KeyFetchLimited of keyId: string
     /// A value the client refused before calling Plaid, e.g. a payment reference Plaid would reject.
     | InvalidArgument of message: string
 
@@ -173,6 +175,7 @@ module PlaidFailure =
         match failure with
         | ApiError e -> PlaidApiError.action e
         | TransportError _ -> FailureAction.RetryLater
+        | KeyFetchLimited _ -> FailureAction.RetryLater
         | HttpError(status, _) when status >= 500 || status = 429 -> FailureAction.RetryLater
         | HttpError _
         | InvalidResponse _
