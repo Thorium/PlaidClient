@@ -1,5 +1,7 @@
 # PlaidClient
 
+For [plaid.com](https://plaid.com). An unofficial client, not affiliated with or endorsed by Plaid, a trademark of its owner.
+
 A standalone F# client for [Plaid](https://plaid.com) open banking, aimed at UK bank-transaction data. It has no
 dependencies beyond FSharp.Core and System.Text.Json, and targets `netstandard2.0`,`net8.0` and `net10.0`, so .NET Framework
 4.7.2+ and modern .NET applications can both use it. A .NET Framework project needs a reference to
@@ -68,6 +70,10 @@ match! Sync.syncItemAsync client store itemId ct with
 
 ## Flow
 
+**Use an `HttpClient` that doesn't follow redirects.** Plaid's client id and secret go in custom headers, which .NET
+carries across a redirect to any host, and a default `HttpClient` follows them. `PlaidClient.createHttpClient ()` makes
+one. With your own, including through `IHttpClientFactory`, set `AllowAutoRedirect = false` on its handler.
+
 ```fsharp
 open Plaid
 
@@ -76,7 +82,7 @@ let client =
         { PlaidConfig.uk clientId secret PlaidEnvironment.Production "Your Company" with
             RedirectUri = ValueSome "https://app.example.co.uk/plaid/oauth"   // required for UK OAuth banks
             WebhookUrl = ValueSome "https://app.example.co.uk/plaid/webhook" }
-      Http = httpClient }   // you own the HttpClient (IHttpClientFactory works)
+      Http = PlaidClient.createHttpClient () }   // you own the HttpClient; keep one for the application's lifetime
 
 // 1. Server: make a link token, hand it to Plaid Link in the browser.
 let! token = Api.createLinkTokenAsync client userId ct

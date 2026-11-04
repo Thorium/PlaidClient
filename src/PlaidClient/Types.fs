@@ -85,8 +85,20 @@ module PlaidConfig =
     let us clientId secret environment clientName =
         create clientId secret environment clientName [ "US" ]
 
-/// Configuration plus the HttpClient used for every call. The caller owns the HttpClient.
+/// Configuration plus the HttpClient used for every call. The caller owns the HttpClient, which must not follow redirects:
+/// see PlaidClient.createHttpClient.
 type PlaidClient = { Config: PlaidConfig; Http: HttpClient }
+
+module PlaidClient =
+
+    /// An HttpClient that doesn't follow redirects, for PlaidClient.Http. One that does sends the client id and secret to wherever a
+    /// redirect points, because .NET keeps custom headers. Keep it for the application's lifetime.
+    let createHttpClient () =
+#if NETSTANDARD
+        new HttpClient(new HttpClientHandler(UseCookies = false, AllowAutoRedirect = false))
+#else
+        new HttpClient(new SocketsHttpHandler(UseCookies = false, PooledConnectionLifetime = System.TimeSpan.FromMinutes 5., AllowAutoRedirect = false))
+#endif
 
 /// Error object Plaid returns with a non-success status.
 type PlaidApiError =
