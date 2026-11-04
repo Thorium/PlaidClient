@@ -234,11 +234,11 @@ type private GatedKeyHandler() =
     member _.Calls = calls
     member _.Release() = release.SetResult()
 
-    override _.SendAsync(_, _) =
+    override _.SendAsync(_, ct) =
         Interlocked.Increment &calls |> ignore
 
         task {
-            do! release.Task
+            do! release.Task.WaitAsync ct
             return new Net.Http.HttpResponseMessage(Net.HttpStatusCode.OK, Content = new Net.Http.StringContent(keyReply "kid-1"))
         }
 
@@ -253,6 +253,22 @@ let ``concurrent requests for one key id share a single fetch`` () : Task =
         handler.Release()
         let! results = Task.WhenAll pending
         Assert.All(results, fun r -> Assert.True(Result.isOk r))
+        Assert.Equal(1, handler.Calls)
+    }
+
+[<Fact>]
+let ``one caller cancelling does not fail another sharing the fetch`` () : Task =
+    task {
+        use handler = new GatedKeyHandler()
+        use leaving = new CancellationTokenSource()
+        let client = { Config = config; Http = new Net.Http.HttpClient(handler) }
+        let cache = Webhook.KeyCache(TimeSpan.FromHours 1.0)
+        let _ = cache.GetAsync(client, "kid-1", now, leaving.Token)
+        let staying = cache.GetAsync(client, "kid-1", now, CancellationToken.None)
+        leaving.Cancel()
+        handler.Release()
+        let! result = staying
+        Assert.True(Result.isOk result)
         Assert.Equal(1, handler.Calls)
     }
 
