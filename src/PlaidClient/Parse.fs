@@ -157,14 +157,37 @@ let private updateStatus =
     | ValueSome "HISTORICAL_UPDATE_COMPLETE" -> TransactionsUpdateStatus.HistoricalUpdateComplete
     | _ -> TransactionsUpdateStatus.Unknown
 
+/// One section of a sync page: the entries that read, and those that don't, which must not stop the whole item's sync.
+/// Plaid's spec requires all three sections. One that is missing, null or not an array fails the page, as reading it as
+/// empty would move the cursor past changes nobody saw.
+let private syncSection (name: string) (read: JsonElement -> 'T) (e: JsonElement) =
+    let entries =
+        requiredArray name e
+        |> List.map (fun entry ->
+            try
+                Ok(read entry)
+            with InvalidJson reason ->
+                Error
+                    { UnparsedTransaction.Section = name
+                      Reason = reason
+                      Raw = entry.GetRawText() })
+
+    entries |> List.choose (function Ok value -> Some value | Error _ -> None),
+    entries |> List.choose (function Error unparsed -> Some unparsed | Ok _ -> None)
+
 let syncPage (e: JsonElement) : SyncPage =
-    { Added = array "added" e |> List.map transaction
-      Modified = array "modified" e |> List.map transaction
-      Removed = array "removed" e |> List.map removed
+    let added, unparsedAdded = syncSection "added" transaction e
+    let modified, unparsedModified = syncSection "modified" transaction e
+    let gone, unparsedRemoved = syncSection "removed" removed e
+
+    { Added = added
+      Modified = modified
+      Removed = gone
       NextCursor = requiredString "next_cursor" e
       HasMore = required "has_more" tryBool e
       UpdateStatus = tryString "transactions_update_status" e |> updateStatus
-      Accounts = array "accounts" e |> List.map account }
+      Accounts = array "accounts" e |> List.map account
+      Unparsed = unparsedAdded @ unparsedModified @ unparsedRemoved }
 
 let webhookKey (e: JsonElement) : WebhookVerificationKey =
     let key = required "key" tryObject e

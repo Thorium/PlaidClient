@@ -20,6 +20,7 @@ What it covers:
 - Sandbox helpers: public tokens without Link, firing webhooks, forcing `ITEM_LOGIN_REQUIRED`
 - UK/EU payments (`Payments`): recipients, payments and standing orders, Variable Recurring Payments consents
 - Identity checks (`Identity`): account holders, Identity Match scores, Identity Verification (KYC)
+- Business watchlist screening (`Monitor`): entity screenings, hits, reviews, history and programs, with a fail-closed outcome
 - US lending (`Auth`, `Assets`, `Income`, `Users`): account and routing numbers, processor tokens (e.g. Checkbook),
   asset reports, bank and payroll income
 
@@ -53,6 +54,15 @@ match! Sync.syncItemAsync client store itemId ct with
     | FailureAction.ItemGone -> do! store.DeleteItemAsync(itemId, ct)
     | FailureAction.Unsupported | FailureAction.FixRequest -> logError failure
 ```
+
+A sync entry that can't be read doesn't fail the sync: it is in `SyncSummary.Unparsed` and `TransactionChanges.Unparsed`, with
+its section, the reason and the raw JSON, and the cursor moves past it. Plaid sends it again only if it changes.
+
+**An `IPlaidStore` must keep `changes.Unparsed` in the same write as the cursor, or those entries are lost.**
+`InMemoryPlaidStore` and `JsonFilePlaidStore` don't keep them. Printing an entry hides its raw JSON, which holds personal and
+financial data.
+
+A page that can't be read as a whole, such as one without `next_cursor` or with `added`, `modified` or `removed` missing, null or not an array, is still `InvalidResponse` and keeps the cursor.
 
 ## Items, balances and institutions
 
@@ -216,6 +226,66 @@ Standing orders use `PaymentRequest.Schedule`. Variable Recurring Payments (UK) 
 
 New Plaid integrations name the customer with a `user_id` from `Users.createAsync`; payments require it.
 
+## Business watchlist screening
+
+`Monitor` screens a business against the lists of an entity program, set up in the Plaid Dashboard:
+
+| Need | Calls |
+| --- | --- |
+| Screen a business | `Monitor.createEntityScreeningAsync client (EntitySearchTerms.create programId legalName) clientUserId` |
+| Read or change one | `getEntityScreeningAsync`, `updateEntityScreeningAsync` (`EntityScreeningUpdate.create screeningId`) |
+| Find screenings | `listEntityScreeningsAsync client programId EntityScreeningFilter.all` |
+| Its hits | `listEntityHitsAsync` |
+| Reviews | `createEntityReviewAsync client screeningId confirmedHits dismissedHits comment`, `listEntityReviewsAsync` |
+| Its changes, newest first | `listEntityHistoryAsync`; empty for a screening never edited |
+| Programs, and the lists each screens | `getEntityProgramAsync`, `listEntityProgramsAsync` |
+
+Lists follow `next_cursor` to the last page. A page that fails, can't be read or lacks `next_cursor`, or a cursor Plaid
+repeats, makes the whole call an `Error`, so a list is never partial. A hit that can't be read is in
+`EntityHitList.Unparsed`.
+
+**`cleared` is the customer's own decision state, not Plaid's finding.** It has three routes:
+
+- Plaid found the name on none of the program's lists when screening it, with no person involved.
+- A reviewer on the customer's team dismissed its hit as invalid.
+- The customer's own code set it with `updateEntityScreeningAsync`, which asks for no review in Plaid's spec.
+
+`AuditTrail.Source` says who or what made the last change: `Dashboard` with `DashboardUserId` is a person, `Api` is the
+customer's own code, `System` is Plaid. It covers any change, such as an assignee edit, so it need not be the one that set
+the status. Plaid's docs describe no rule that clears a screening by itself, and don't say whether dismissing every hit sets
+`cleared`, or whether a screening with no hit always starts there.
+
+Hits use other words than screenings: `pending_review`, `confirmed` and `dismissed`.
+
+`EntityScreeningOutcome.ofResults` reads both answers as a neutral outcome:
+
+```fsharp
+let! screening = Monitor.getEntityScreeningAsync client screeningId ct
+let! hits = Monitor.listEntityHitsAsync client screeningId ct
+
+match Monitor.EntityScreeningOutcome.ofResults screening hits with
+| Monitor.EntityScreeningOutcome.Clear clear -> ... // clear.ProgramId, clear.AuditTrail, clear.DismissedHits
+| Monitor.EntityScreeningOutcome.NeedsReview(hits, gaps) -> ...
+| Monitor.EntityScreeningOutcome.NotScreened gaps -> ...
+```
+
+| Screening | Hits | Outcome |
+| --- | --- | --- |
+| `cleared` | none, or all `dismissed` | `Clear` |
+| `cleared` | one `pending_review` or `confirmed` | `NeedsReview` |
+| `pending_review` or `rejected` | any | `NeedsReview`, with `StatusNotCleared` |
+| any | a status not in Plaid's spec | `NeedsReview`, with `UnknownHitStatus` |
+| a status not in Plaid's spec, or unreadable | none to look at | `NotScreened` |
+| `cleared` | a page failed, or a hit can't be read | `NotScreened` |
+
+A `Clear` is this customer's program's result on its `AuditTrail` date. It says nothing of a list outside the program, so
+read `EntityProgram.ListsEnabled` before relying on one: for the UK, look for `UK_HMC`. A rescan or a person can send the
+screening back to review, and the `EntityScreeningStatusUpdated` webhook says so without saying what it became. Read both
+answers again on it. `rejected` screenings get no new hits.
+
+Monitor is not on by default, in Sandbox either: request it in the Dashboard. Plaid's docs say it can screen customers in any
+country, and that the integrating company must be based in the US, Canada or UK.
+
 ## US lending
 
 The typed US flows match a lending app's usual needs:
@@ -235,8 +305,8 @@ For new US income integrations Plaid recommends Consumer Report (Plaid Check, `/
 
 ## Other Plaid products
 
-For anything without a typed function (Transfer, Liabilities, Investments, Consumer Report, Monitor, payment
-refunds, ...), make the Link token with `Api.createLinkTokenForProductsAsync` and call the endpoints with
+For anything without a typed function (Transfer, Liabilities, Investments, Consumer Report, Monitor's individual
+screening, payment refunds, ...), make the Link token with `Api.createLinkTokenForProductsAsync` and call the endpoints with
 `Api.postAsync` (your parser over a `JsonElement`), `Api.postRawAsync` (the reply as JSON text) or
 `Api.postForBytesAsync` (files). They add the credentials and `Plaid-Version` headers and return Plaid errors as
 `ApiError`, like every other call. Write the body as an F# record or anonymous record with Plaid's field names: a

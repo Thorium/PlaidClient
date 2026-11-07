@@ -11,7 +11,7 @@ open System.Text.Json
 open System.Threading.Tasks
 
 /// Two-way mapping between DU cases and Plaid's codes, from one table.
-type private Codes<'T when 'T: comparison>(table: ('T * string) list) =
+type internal Codes<'T when 'T: comparison>(table: ('T * string) list) =
     let byCode = table |> List.map (fun (value, code) -> code, value) |> Map.ofList
     let byValue = Map.ofList table
 

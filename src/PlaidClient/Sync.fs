@@ -8,7 +8,9 @@ type SyncSummary =
     { Added: int
       Modified: int
       Removed: int
-      UpdateStatus: TransactionsUpdateStatus }
+      UpdateStatus: TransactionsUpdateStatus
+      /// Entries the sync moved past without applying: log or keep them, as Plaid won't send them again unless they change.
+      Unparsed: UnparsedTransaction list }
 
 type LinkedItem =
     { Item: StoredItem
@@ -57,7 +59,8 @@ let syncItemAsync (client: PlaidClient) (store: IPlaidStore) (itemId: string) ct
                         { Added = changes.Added.Length
                           Modified = changes.Modified.Length
                           Removed = changes.Removed.Length
-                          UpdateStatus = lastPage.UpdateStatus }
+                          UpdateStatus = lastPage.UpdateStatus
+                          Unparsed = changes.Unparsed }
     }
 
 /// Exchanges the public token from Link, stores the item, reads its accounts and runs the first sync.

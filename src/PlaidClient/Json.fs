@@ -84,5 +84,27 @@ let required name (reader: string -> JsonElement -> 'T voption) e =
 
 let requiredString name e = required name tryString e
 
+/// Elements of an array property the answer must hold: for answers where array's reading of a missing one as empty
+/// would say "none found".
+let requiredArray name e =
+    let elements: JsonElement = required name (ofKind JsonValueKind.Array id) e
+    elements.EnumerateArray() |> List.ofSeq
+
+/// A string property the answer must hold, which may be null: for answers where tryString's reading of a missing one as
+/// null would say more than the answer does.
+let requiredNullableString (name: string) (e: JsonElement) =
+    let property =
+        if e.ValueKind = JsonValueKind.Object then
+            match e.TryGetProperty name with
+            | true, v -> ValueSome v
+            | _ -> ValueNone
+        else
+            ValueNone
+
+    match property with
+    | ValueSome v when v.ValueKind = JsonValueKind.Null -> ValueNone
+    | ValueSome v when v.ValueKind = JsonValueKind.String -> ValueSome(v.GetString())
+    | _ -> raise (InvalidJson $"Missing or invalid field '{name}'")
+
 /// A string field holding one of a closed set of codes, read with ofCode.
 let requiredCode name (ofCode: string -> 'T) e = requiredString name e |> ofCode

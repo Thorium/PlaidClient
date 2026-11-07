@@ -16,6 +16,7 @@
     <Compile Include="ItemAndInstitutionTests.fs" />
     <Compile Include="UsProductsTests.fs" />
     <Compile Include="PaymentsIdentityTests.fs" />
+    <Compile Include="MonitorTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

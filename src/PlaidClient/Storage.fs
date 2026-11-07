@@ -36,7 +36,8 @@ type IPlaidStore =
     /// Applies one completed sync and stores nextCursor, atomically: changes and cursor in one database
     /// transaction. Two syncs of the same item may overlap (a webhook and a manual sync), and only an
     /// atomic apply keeps the data matching the cursor. Without transactions, store the changes before the
-    /// cursor and run one sync per item at a time.
+    /// cursor and run one sync per item at a time. A store must keep changes.Unparsed in that same write:
+    /// the cursor moves past those entries, so they are lost otherwise. The two stores here don't keep them.
     abstract ApplySyncAsync:
         itemId: string * changes: TransactionChanges * nextCursor: string * ct: CancellationToken -> Task
     abstract GetTransactionsAsync: itemId: string * ct: CancellationToken -> Task<Transaction list>

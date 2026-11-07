@@ -6,7 +6,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
     <PackageId>PlaidClient</PackageId>
-    <Version>1.2.2</Version>
+    <Version>1.2.3</Version>
     <Authors>Tuomas Hietanen</Authors>
     <PackageLicenseExpression>Unlicense</PackageLicenseExpression>
     <Description>For plaid.com. Unofficial .NET client for Plaid open banking: transactions sync, UK/EU payments, identity checks (Identity Match, KYC), Auth, Assets and Income, with verified webhooks and a replaceable storage layer.</Description>
@@ -16,7 +16,13 @@
     <RepositoryType>git</RepositoryType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageIcon>icon.png</PackageIcon>
-    <PackageReleaseNotes>v1.2.2:
+    <PackageReleaseNotes>v1.2.3:
+- CHANGED: one unreadable /transactions/sync entry no longer stops the item's sync; it is in SyncSummary.Unparsed and TransactionChanges.Unparsed, and the cursor moves past it. A store must keep them with the cursor, or they are lost (BREAKING for code building SyncPage, TransactionChanges or SyncSummary)
+- FIXED: a /transactions/sync page with added, modified or removed missing, null or not an array is InvalidResponse and keeps the cursor
+- ADDED: Monitor: entity watchlist screening create, get, list, update, hits, reviews, history and programs; a paged list that fails at any page returns the error, never part of the list
+- ADDED: Monitor.EntityScreeningOutcome.ofResults: Clear with its program and audit trail, NeedsReview or NotScreened; only cleared with every hit dismissed reads Clear
+- ADDED: Webhook.EntityScreeningStatusUpdated for ENTITY_SCREENING STATUS_UPDATED (BREAKING for exhaustive matches)
+v1.2.2:
 - ADDED: PlaidClient.createHttpClient: an HttpClient that doesn't follow redirects. Use it or set AllowAutoRedirect = false: one that follows them sends the client id and secret to the redirect's host
 v1.2.1:
 - CHANGED: Webhook.KeyCache fetches a key id it never held at most once per unknownKeyInterval (default 1 s); others get KeyFetchLimited
@@ -75,6 +81,7 @@ v1.0.0:
     <Compile Include="Assets.fs" />
     <Compile Include="Income.fs" />
     <Compile Include="Payments.fs" />
+    <Compile Include="Monitor.fs" />
     <Compile Include="Webhook.fs" />
   </ItemGroup>
 

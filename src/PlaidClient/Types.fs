@@ -306,6 +306,20 @@ type PersonalFinanceCategory =
       Detailed: string
       ConfidenceLevel: string voption }
 
+/// An entry of a /transactions/sync page that could not be read. The sync moves past it, and Plaid sends it again only if it changes,
+/// so the application has to keep it: an added one is missing from the store, a modified one stays at its old version, and a removed
+/// one stays in the store. Printing one (%A, ToString) hides Raw.
+[<StructuredFormatDisplay("{Display}")>]
+type UnparsedTransaction =
+    { /// added, modified or removed
+      Section: string
+      Reason: string
+      /// The entry exactly as Plaid sent it. It holds personal and financial data: keep it out of logs.
+      Raw: string }
+
+    member this.Display = $"UnparsedTransaction {{ Section = {this.Section}; Reason = {this.Reason}; Raw = *** }}"
+    override this.ToString() = this.Display
+
 type Transaction =
     { TransactionId: string
       AccountId: string
@@ -346,22 +360,26 @@ type SyncPage =
       NextCursor: string
       HasMore: bool
       UpdateStatus: TransactionsUpdateStatus
-      Accounts: Account list }
+      Accounts: Account list
+      Unparsed: UnparsedTransaction list }
 
-/// Changes of one complete sync, in the order Plaid sent them.
+/// Changes of one complete sync, in the order Plaid sent them. A store gets Unparsed with the new cursor, so it can keep them in the
+/// same write.
 type TransactionChanges =
     { Added: Transaction list
       Modified: Transaction list
-      Removed: RemovedTransaction list }
+      Removed: RemovedTransaction list
+      Unparsed: UnparsedTransaction list }
 
 module TransactionChanges =
 
-    let empty: TransactionChanges = { Added = []; Modified = []; Removed = [] }
+    let empty: TransactionChanges = { Added = []; Modified = []; Removed = []; Unparsed = [] }
 
     let ofPages (pages: SyncPage list) : TransactionChanges =
         { Added = pages |> List.collect _.Added
           Modified = pages |> List.collect _.Modified
-          Removed = pages |> List.collect _.Removed }
+          Removed = pages |> List.collect _.Removed
+          Unparsed = pages |> List.collect _.Unparsed }
 
     /// Upserts added and modified transactions, then drops removed ones.
     let apply (changes: TransactionChanges) (existing: Map<string, Transaction>) =

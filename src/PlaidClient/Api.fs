@@ -1,6 +1,6 @@
 /// The HTTP layer (postAsync and friends), Link tokens, items, accounts, institutions, transactions sync,
 /// webhook keys and sandbox helpers. Product-specific calls live in their own modules (Payments, Identity,
-/// Auth, Assets, Income, Users). Every call returns Plaid's error object as ApiError instead of throwing;
+/// Auth, Assets, Income, Users, Monitor). Every call returns Plaid's error object as ApiError instead of throwing;
 /// cancellation of the caller's token still throws OperationCanceledException.
 module Plaid.Api
 

@@ -85,7 +85,8 @@ let ``apply upserts then removes`` () =
         |> TransactionChanges.apply
             { Added = [ t1; t2 ]
               Modified = [ t1b ]
-              Removed = [ { TransactionId = "tx-2"; AccountId = ValueNone } ] }
+              Removed = [ { TransactionId = "tx-2"; AccountId = ValueNone } ]
+              Unparsed = [] }
 
     Assert.Equal<string list>([ "tx-1" ], result |> Map.toList |> List.map fst)
     Assert.Equal(2m, result["tx-1"].Amount)

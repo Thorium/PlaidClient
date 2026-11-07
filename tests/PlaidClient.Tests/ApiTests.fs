@@ -239,12 +239,14 @@ let ``accounts parse balances and item consent expiry`` () : Task =
     }
 
 [<Fact>]
-let ``a number that does not fit decimal becomes InvalidResponse, not an exception`` () : Task =
+let ``a number that does not fit decimal goes to Unparsed, not an exception`` () : Task =
     task {
         let huge = (transactionJson "tx-1" 1m).Replace("\"amount\":1", "\"amount\":1e400")
         use handler = new FakePlaidHandler(fun _ _ -> ok (syncPageJson [ huge ] [] [] "c" false))
         match! Api.syncTransactionsPageAsync (clientWith handler) "access-1" ValueNone 10 ct with
-        | Error(InvalidResponse message) -> Assert.Contains("amount", message)
+        | Ok page ->
+            Assert.Empty page.Added
+            Assert.Contains("amount", (Assert.Single page.Unparsed).Reason)
         | other -> failwith $"%A{other}"
     }
 

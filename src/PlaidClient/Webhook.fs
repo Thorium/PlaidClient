@@ -34,6 +34,9 @@ type WebhookEvent =
     /// An Identity Verification changed: read it with Identity.getVerificationAsync, the webhook itself
     /// carries no status.
     | IdentityVerificationUpdated of verificationId: string * change: Identity.VerificationChange
+    /// A Monitor entity screening's status changed, by a person in the Dashboard or in ongoing monitoring: read it with
+    /// Monitor.getEntityScreeningAsync and Monitor.listEntityHitsAsync, the webhook itself carries no status.
+    | EntityScreeningStatusUpdated of screeningId: string
     /// Not sent for InputNeeded or Authorising. Webhooks can arrive out of order: compare timestamp with
     /// the last one applied, or read the payment with Payments.getPaymentAsync.
     | PaymentStatusUpdate of
@@ -271,6 +274,8 @@ let parse (body: string) : Result<WebhookEvent, PlaidFailure> =
                     | other -> Identity.VerificationChange.Other other
 
                 IdentityVerificationUpdated(Json.requiredString "identity_verification_id" e, change)
+            | "ENTITY_SCREENING", "STATUS_UPDATED" ->
+                EntityScreeningStatusUpdated(Json.requiredString "entity_screening_id" e)
             | "PAYMENT_INITIATION", "PAYMENT_STATUS_UPDATE" ->
                 let status name =
                     Json.tryString name e |> ValueOption.map Payments.PaymentStatus.ofString

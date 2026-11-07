@@ -258,3 +258,152 @@ let ``unlinking removes the item at Plaid and from the store`` () : Task =
         let! stored = store.TryGetItemAsync("item-1", ct)
         Assert.Equal(ValueNone, stored)
     }
+
+let private noAmount = """{"transaction_id":"tx-bad","account_id":"acc-1","date":"2026-10-01"}"""
+
+[<Fact>]
+let ``an unreadable transaction is reported, and the rest of the sync goes on`` () : Task =
+    task {
+        use handler =
+            new FakePlaidHandler(fun _ body ->
+                match cursorOf body with
+                | ValueNone -> ok (syncPageJson [ transactionJson "tx-1" 10m; noAmount ] [] [] "c1" false)
+                | ValueSome "c1" -> ok (syncPageJson [ transactionJson "tx-2" 20m ] [] [] "c2" false)
+                | ValueSome other -> failwith $"unexpected cursor {other}")
+
+        let client = clientWith handler
+        let! store = storeWith [ item ]
+        let! first = Sync.syncItemAsync client store "item-1" ct
+        let first = expectOk first
+        Assert.Equal(1, first.Added)
+        let unparsed = Assert.Single first.Unparsed
+        Assert.Equal("added", unparsed.Section)
+        Assert.Equal("Missing or invalid field 'amount'", unparsed.Reason)
+        Assert.Equal(noAmount, unparsed.Raw)
+
+        let! stored = store.TryGetItemAsync("item-1", ct)
+        Assert.Equal(ValueSome "c1", stored |> ValueOption.bind _.Cursor)
+
+        let! second = Sync.syncItemAsync client store "item-1" ct
+        Assert.Empty (expectOk second).Unparsed
+        let! transactions = store.GetTransactionsAsync("item-1", ct)
+        Assert.Equal<string list>([ "tx-1"; "tx-2" ], transactions |> List.map _.TransactionId)
+    }
+
+[<Fact>]
+let ``fetching collects unreadable entries of every section and page`` () : Task =
+    task {
+        let noId = """{"account_id":"acc-1"}"""
+
+        use handler =
+            new FakePlaidHandler(fun _ body ->
+                match cursorOf body with
+                | ValueNone -> ok (syncPageJson [ noAmount ] [] [] "c1" true)
+                | ValueSome "c1" ->
+                    let page = syncPageJson [] [ noAmount ] [] "c2" false
+                    ok (page.Replace("\"removed\":[]", $"\"removed\":[{noId}]"))
+                | ValueSome other -> failwith $"unexpected cursor {other}")
+
+        match! Sync.fetchChangesAsync (clientWith handler) "access-1" ValueNone ct with
+        | Ok(changes, lastPage) ->
+            Assert.Equal<string list>([ "added"; "modified"; "removed" ], changes.Unparsed |> List.map _.Section)
+            Assert.Equal(noId, changes.Unparsed[2].Raw)
+            Assert.Equal("c2", lastPage.NextCursor)
+        | Error failure -> failwith $"%A{failure}"
+    }
+
+/// Passes everything to inner, and records what each sync hands the store.
+let private recording (inner: IPlaidStore) (applied: ResizeArray<TransactionChanges * string>) =
+    { new IPlaidStore with
+        member _.SaveItemAsync(saved, ct) = inner.SaveItemAsync(saved, ct)
+        member _.TryGetItemAsync(itemId, ct) = inner.TryGetItemAsync(itemId, ct)
+        member _.GetUserItemsAsync(userId, ct) = inner.GetUserItemsAsync(userId, ct)
+        member _.DeleteItemAsync(itemId, ct) = inner.DeleteItemAsync(itemId, ct)
+        member _.ApplySyncAsync(itemId, changes, nextCursor, ct) =
+            applied.Add((changes, nextCursor))
+            inner.ApplySyncAsync(itemId, changes, nextCursor, ct)
+        member _.GetTransactionsAsync(itemId, ct) = inner.GetTransactionsAsync(itemId, ct) }
+
+[<Fact>]
+let ``the store gets the unreadable entries of every page in one write with the new cursor`` () : Task =
+    task {
+        use handler =
+            new FakePlaidHandler(fun _ body ->
+                match cursorOf body with
+                | ValueNone -> ok (syncPageJson [ noAmount ] [] [] "c1" true)
+                | ValueSome "c1" -> ok (syncPageJson [ transactionJson "tx-1" 10m ] [ noAmount ] [] "c2" false)
+                | ValueSome other -> failwith $"unexpected cursor {other}")
+
+        let applied = ResizeArray()
+        let! inner = storeWith [ item ]
+        let! summary = Sync.syncItemAsync (clientWith handler) (recording inner applied) "item-1" ct
+        Assert.Equal(2, (expectOk summary).Unparsed.Length)
+        let changes, cursor = Assert.Single applied
+        Assert.Equal("c2", cursor)
+        Assert.Equal<string list>([ "added"; "modified" ], changes.Unparsed |> List.map _.Section)
+        Assert.Equal<string list>([ noAmount; noAmount ], changes.Unparsed |> List.map _.Raw)
+        Assert.Equal<string list>([ "tx-1" ], changes.Added |> List.map _.TransactionId)
+    }
+
+[<Fact>]
+let ``printing a summary or an unreadable entry hides the raw JSON`` () : Task =
+    task {
+        let sensitive = """{"transaction_id":"tx-bad","account_id":"acc-1","name":"Jane Doe BETTING 1234"}"""
+        use handler = new FakePlaidHandler(fun _ _ -> ok (syncPageJson [ sensitive ] [] [] "c1" false))
+        let! store = storeWith [ item ]
+        let! result = Sync.syncItemAsync (clientWith handler) store "item-1" ct
+        let summary = expectOk result
+        let unparsed = Assert.Single summary.Unparsed
+        Assert.Equal(sensitive, unparsed.Raw)
+        for text in [ $"%A{summary}"; string summary; $"%A{unparsed}"; string unparsed; $"%A{result}" ] do
+            Assert.DoesNotContain("Jane Doe", text)
+            Assert.DoesNotContain("BETTING", text)
+            Assert.Contains("Missing or invalid field 'amount'", text)
+    }
+
+[<Fact>]
+let ``a page without its cursor still fails the sync and keeps the old one`` () : Task =
+    task {
+        use handler = new FakePlaidHandler(fun _ _ -> ok """{"added":[],"modified":[],"removed":[],"has_more":false}""")
+        let! store = storeWith [ { item with Cursor = ValueSome "c0" } ]
+
+        match! Sync.syncItemAsync (clientWith handler) store "item-1" ct with
+        | Error(InvalidResponse message) -> Assert.Contains("next_cursor", message)
+        | other -> failwith $"%A{other}"
+
+        let! stored = store.TryGetItemAsync("item-1", ct)
+        Assert.Equal(ValueSome "c0", stored |> ValueOption.bind _.Cursor)
+    }
+
+[<Theory>]
+[<InlineData("added", "")>]
+[<InlineData("added", "null")>]
+[<InlineData("added", "{}")>]
+[<InlineData("modified", "")>]
+[<InlineData("modified", "null")>]
+[<InlineData("modified", "{}")>]
+[<InlineData("removed", "")>]
+[<InlineData("removed", "null")>]
+[<InlineData("removed", "\"none\"")>]
+let ``a page whose section is missing, null or no array fails and keeps the cursor`` (section: string, value: string) : Task =
+    task {
+        let sections =
+            [ "added"; "modified"; "removed" ]
+            |> List.choose (fun name ->
+                if name <> section then Some $"\"{name}\":[]"
+                elif value = "" then None
+                else Some $"\"{name}\":{value}")
+            |> String.concat ","
+
+        use handler =
+            new FakePlaidHandler(fun _ _ -> ok ("{" + sections + ""","next_cursor":"c1","has_more":false,"accounts":[]}"""))
+
+        let! store = storeWith [ { item with Cursor = ValueSome "c0" } ]
+
+        match! Sync.syncItemAsync (clientWith handler) store "item-1" ct with
+        | Error(InvalidResponse message) -> Assert.Contains(section, message)
+        | other -> failwith $"%A{other}"
+
+        let! stored = store.TryGetItemAsync("item-1", ct)
+        Assert.Equal(ValueSome "c0", stored |> ValueOption.bind _.Cursor)
+    }
