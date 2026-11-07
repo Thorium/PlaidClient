@@ -614,9 +614,7 @@ let ``a cursor Plaid already gave fails the list rather than looping`` (call: Pa
         Assert.Equal(2, handler.Calls.Length)
     }
 
-[<Theory>]
-[<InlineData("null")>]
-[<InlineData("\"\"")>]
+[<Theory; InlineData("null"); InlineData("\"\"")>]
 let ``a null or empty next_cursor ends the list`` (next: string) : Task =
     task {
         use handler = new FakePlaidHandler(fun _ _ -> ok (pageOf "entity_watchlist_programs" [ programJson "entprg_1" ] next))
@@ -792,10 +790,7 @@ let ``both failing is not screened, naming both`` () =
     | EntityScreeningOutcome.NotScreened [ ScreeningGap.ScreeningReadFailed _; ScreeningGap.HitListFailed _ ] -> ()
     | other -> failwith $"%A{other}"
 
-[<Theory>]
-[<InlineData("status")>]
-[<InlineData("audit_trail")>]
-[<InlineData("search_terms")>]
+[<Theory; InlineData("status"); InlineData("audit_trail"); InlineData("search_terms")>]
 let ``a screening without what a Clear needs is an invalid response, and so not screened`` (field: string) : Task =
     task {
         let answer =
@@ -836,15 +831,17 @@ let ``an audit trail without its date or source is an invalid response`` (audit:
 
 [<Fact>]
 let ``an audit source Plaid hasn't listed stays on the Clear as Other`` () =
-    let answer =
-        (screeningJson "entscr_1" "cleared").Replace("\"source\":\"dashboard\"", "\"source\":\"batch\"")
+    task {
+        let answer =
+            (screeningJson "entscr_1" "cleared").Replace("\"source\":\"dashboard\"", "\"source\":\"batch\"")
 
-    use handler = new FakePlaidHandler(fun _ _ -> ok answer)
-    let screening = (getEntityScreeningAsync (clientWith handler) "entscr_1" ct).Result
+        use handler = new FakePlaidHandler(fun _ _ -> ok answer)
+        let! screening = (getEntityScreeningAsync (clientWith handler) "entscr_1" ct)
 
-    match EntityScreeningOutcome.ofResults screening (Ok(hitsWith [])) with
-    | EntityScreeningOutcome.Clear clear -> Assert.Equal(AuditSource.Other "batch", clear.AuditTrail.Source)
-    | other -> failwith $"%A{other}"
+        match EntityScreeningOutcome.ofResults screening (Ok(hitsWith [])) with
+        | EntityScreeningOutcome.Clear clear -> Assert.Equal(AuditSource.Other "batch", clear.AuditTrail.Source)
+        | other -> failwith $"%A{other}"
+    } :> Task
 
 [<Fact>]
 let ``the outcome reads through the real calls, a failed hit page included`` () : Task =

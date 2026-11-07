@@ -97,7 +97,7 @@ module PlaidClient =
 #if NETSTANDARD
         new HttpClient(new HttpClientHandler(UseCookies = false, AllowAutoRedirect = false))
 #else
-        new HttpClient(new SocketsHttpHandler(UseCookies = false, PooledConnectionLifetime = System.TimeSpan.FromMinutes 5., AllowAutoRedirect = false))
+        new HttpClient(new SocketsHttpHandler(UseCookies = false, PooledConnectionLifetime = TimeSpan.FromMinutes 5., AllowAutoRedirect = false))
 #endif
 
 /// Error object Plaid returns with a non-success status.

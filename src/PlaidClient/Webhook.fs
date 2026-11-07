@@ -201,7 +201,7 @@ type KeyCache(refreshAfter: TimeSpan, unknownKeyInterval: TimeSpan) =
 
             mine.Value <-
                 lazy
-                    if not held && not (claimUnknownFetch now) then
+                    if not (held || claimUnknownFetch now) then
                         forget keyId mine.Value
                         Task.FromResult(Error(KeyFetchLimited keyId))
                     else

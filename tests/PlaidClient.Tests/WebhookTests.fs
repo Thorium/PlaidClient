@@ -265,7 +265,7 @@ let ``one caller cancelling does not fail another sharing the fetch`` () : Task 
         let cache = Webhook.KeyCache(TimeSpan.FromHours 1.0)
         let _ = cache.GetAsync(client, "kid-1", now, leaving.Token)
         let staying = cache.GetAsync(client, "kid-1", now, CancellationToken.None)
-        leaving.Cancel()
+        do! leaving.CancelAsync()
         handler.Release()
         let! result = staying
         Assert.True(Result.isOk result)
