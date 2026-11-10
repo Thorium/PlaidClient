@@ -13,6 +13,8 @@ What it covers:
 - Exchanging the Link public token and storing the item
 - Incremental transaction sync (`/transactions/sync`), including the restart Plaid requires after
   `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION`
+  - A page that has more and repeats a cursor, or gives none, ends the sync as `InvalidResponse` with the stored cursor
+    kept: following it would never end.
 - Accounts with cached or real-time balances, item status, webhook URL changes, item removal, on-demand refresh
 - Institution lookup and search (name, logo, brand colour, OAuth)
 - Webhook verification (the ES256 `Plaid-Verification` JWT) and parsing into a typed event

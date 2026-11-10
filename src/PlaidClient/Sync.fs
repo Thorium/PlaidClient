@@ -20,28 +20,34 @@ type LinkedItem =
 
 /// Every page after cursor. When Plaid reports TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION the
 /// pages fetched so far are discarded and paging restarts from cursor, at most
-/// client.Config.Sync.MaxRestarts times; after that the error is returned.
+/// client.Config.Sync.MaxRestarts times; after that the error is returned. A page that has more and gives a cursor already
+/// used, or none, is InvalidResponse: following it would never end.
 let fetchChangesAsync
     (client: PlaidClient)
     (accessToken: string)
     (cursor: string voption)
     (ct: CancellationToken)
     : Task<Result<TransactionChanges * SyncPage, PlaidFailure>> =
-    let rec loop restarts pageCursor (pages: SyncPage list) =
+    let started = cursor |> ValueOption.toList |> Set.ofList
+
+    let rec loop restarts pageCursor (seen: Set<string>) (pages: SyncPage list) =
         task {
             match! Api.syncTransactionsPageAsync client accessToken pageCursor Api.MaxSyncPageSize ct with
-            | Ok page when page.HasMore -> return! loop restarts (ValueSome page.NextCursor) (page :: pages)
+            | Ok page when page.HasMore && (page.NextCursor = "" || seen.Contains page.NextCursor) ->
+                return Error(InvalidResponse "/transactions/sync has more pages and repeated its next_cursor")
+            | Ok page when page.HasMore ->
+                return! loop restarts (ValueSome page.NextCursor) (seen.Add page.NextCursor) (page :: pages)
             | Ok page -> return Ok(TransactionChanges.ofPages (List.rev (page :: pages)), page)
             | Error(ApiError e) when
                 e.ErrorCode = "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION"
                 && restarts < client.Config.Sync.MaxRestarts
                 ->
                 ct.ThrowIfCancellationRequested()
-                return! loop (restarts + 1) cursor []
+                return! loop (restarts + 1) cursor started []
             | Error e -> return Error e
         }
 
-    loop 0 cursor []
+    loop 0 cursor started []
 
 /// Pulls everything since the item's stored cursor and applies it to the store.
 let syncItemAsync (client: PlaidClient) (store: IPlaidStore) (itemId: string) ct =

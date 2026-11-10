@@ -101,6 +101,30 @@ let ``mutation during pagination restarts from the original cursor and drops the
         )
     }
 
+[<Theory>]
+[<InlineData("c1")>]
+[<InlineData("c0")>]
+[<InlineData("")>]
+let ``a page that has more and repeats a cursor, or gives none, ends the sync and keeps the stored cursor`` (repeated: string) : Task =
+    task {
+        use handler =
+            new FakePlaidHandler(fun _ body ->
+                match cursorOf body with
+                | ValueSome "c0" -> ok (syncPageJson [ transactionJson "tx-1" 10m ] [] [] "c1" true)
+                | _ -> ok (syncPageJson [ transactionJson "tx-2" 20m ] [] [] repeated true))
+
+        let! store = storeWith [ { item with Cursor = ValueSome "c0" } ]
+        let! result = Sync.syncItemAsync (clientWith handler) store "item-1" ct
+
+        match result with
+        | Error(InvalidResponse reason) -> Assert.Contains("repeated its next_cursor", reason)
+        | other -> failwith $"%A{other}"
+
+        Assert.Equal(2, handler.Calls.Length)
+        let! stored = store.TryGetItemAsync("item-1", ct)
+        Assert.Equal(ValueSome "c0", stored |> ValueOption.bind _.Cursor)
+    }
+
 [<Fact>]
 let ``repeated mutation during pagination stops after MaxRestarts and returns the error`` () : Task =
     task {
